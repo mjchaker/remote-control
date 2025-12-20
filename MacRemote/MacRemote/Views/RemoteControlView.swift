@@ -70,11 +70,10 @@ struct RemoteControlView: View {
 
                 Slider(value: Binding(
                     get: { Double(mediaService.currentVolume) },
-                    set: { newValue in
+                    set: { _ in
                         Task {
-                            let delta = Float(newValue) - mediaService.currentVolume
-                            await mediaService.execute(.volume(.up))
-                            // Would need to implement setLevel action for actual slider control
+                            // Note: Slider is for display only
+                            // Use volume buttons for actual control
                         }
                     }
                 ), in: 0...1)

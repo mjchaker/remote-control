@@ -61,7 +61,6 @@ class MediaControlService: ObservableObject {
 
     /// Send a media key press event
     private func sendMediaKey(_ keyCode: Int32) {
-        let flags = NSEvent.EventTypeMask.systemDefined.rawValue
         let data1 = Int((keyCode << 16) | Int32((0xa << 8)))
 
         // Key down
@@ -137,7 +136,7 @@ class MediaControlService: ObservableObject {
         )
 
         var volumeAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -192,7 +191,7 @@ class MediaControlService: ObservableObject {
         )
 
         var mute: UInt32 = isMuted ? 0 : 1
-        var size = UInt32(MemoryLayout<UInt32>.size)
+        let size = UInt32(MemoryLayout<UInt32>.size)
 
         AudioObjectSetPropertyData(
             defaultOutputDeviceID,
@@ -230,7 +229,7 @@ class MediaControlService: ObservableObject {
         )
 
         var volumeAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -317,7 +316,6 @@ class MediaControlService: ObservableObject {
     /// Adjust screen brightness
     private func adjustBrightness(up: Bool) {
         let keyCode: Int32 = up ? NX_KEYTYPE_BRIGHTNESS_UP : NX_KEYTYPE_BRIGHTNESS_DOWN
-        let flags = NSEvent.EventTypeMask.systemDefined.rawValue
         let data1 = Int((keyCode << 16) | Int32((0xa << 8)))
 
         let down = NSEvent.otherEvent(
