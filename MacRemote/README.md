@@ -23,7 +23,7 @@ A gesture-based remote control app for macOS that lets you control your Mac usin
 ### System Controls
 - Brightness up/down
 - Lock screen
-- System sleep (coming soon)
+- System sleep (implemented in `MediaControlService`; not yet exposed as a button)
 
 ## Requirements
 
