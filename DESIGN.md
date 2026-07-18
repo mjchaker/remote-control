@@ -1,399 +1,188 @@
-# Universal Remote Control App - Technical Design Draft
+# MacRemote — Technical Design
 
-## Executive Summary
+## Overview
 
-You're essentially building a **software-defined remote control** that leverages Apple's built-in frameworks to communicate with smart home devices, media players, and displays—without any custom hardware. Think of it like the Control Center remote, but extensible and with deeper device integration.
+MacRemote is a native **macOS** SwiftUI application that turns the Mac it runs on into a gesture-driven media and system remote. Instead of talking to a separate device over the network, it **synthesizes macOS system events** — media keys, volume changes, arrow keys, scroll wheel, and AppleScript actions — so a large touch surface and a handful of buttons drive playback, volume, brightness, navigation, and screen lock on the local machine.
 
-Let me walk you through how this works conceptually, then dive into the architecture.
+This document describes what is actually built. It is a proof of concept: a single, self-contained app with no networking, no device discovery, and no external dependencies.
 
----
-
-## How It All Works (The Mental Model)
-
-### The Communication Stack
-
-Imagine your iPhone as a **universal translator** sitting in your living room. It speaks several "languages":
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Your App                              │
-├─────────────────────────────────────────────────────────┤
-│  HomeKit / Matter  │  MediaRemote  │  Bluetooth LE      │
-│  (Smart Home)      │  (Apple TV)   │  (Direct Control)  │
-├─────────────────────────────────────────────────────────┤
-│           Wi-Fi (IP Network)    │    Bluetooth Radio    │
-├─────────────────────────────────────────────────────────┤
-│                Physical Layer (Radio Waves)              │
-│           2.4 GHz / 5 GHz       │      2.4 GHz          │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Key insight**: Wi-Fi and Bluetooth both operate in the 2.4 GHz radio spectrum—the same frequencies your microwave uses, but at vastly lower power levels (milliwatts vs. hundreds of watts). This is non-ionizing radiation, completely safe for humans.
-
-### Why Matter Matters
-
-Matter is like **Esperanto for smart home devices**. Before Matter, you had:
-- HomeKit devices (Apple only)
-- Zigbee devices (need a hub)
-- Z-Wave devices (different hub)
-- Proprietary Wi-Fi devices (each with their own app)
-
-Matter creates a common language. Your app speaks Matter through HomeKit, and any Matter-certified device understands it—regardless of manufacturer.
-
-```
-Your App → HomeKit Framework → Matter Protocol → Any Matter Device
-                                    ↓
-                        (Thread, Wi-Fi, or Ethernet)
-```
+> **Scope note.** An earlier draft of this document described a much larger "Universal Remote" that would control Apple TV, HomeKit/Matter accessories, and Bluetooth peripherals over Wi-Fi. That vision is **not implemented** and is not described here. What follows matches the code in `MacRemote/`. The networked, multi-protocol product remains a possible future direction, summarized briefly at the end.
 
 ---
 
-## Architecture Overview
+## Mental model
 
-### Layer 1: Device Discovery & Capability Negotiation
+The app is a thin, one-directional pipeline from user input to a synthesized OS event:
 
-When your app launches, it needs to answer: "What can I control, and how?"
-
-```swift
-// Conceptual flow - not production code
-protocol DiscoverableDevice {
-    var id: UUID { get }
-    var name: String { get }
-    var capabilities: Set<DeviceCapability> { get }
-    var connectionType: ConnectionType { get }
-    
-    func connect() async throws
-    func disconnect()
-}
-
-enum DeviceCapability {
-    case powerControl          // Can turn on/off
-    case mediaPlayback         // Play/pause/skip
-    case volumeControl         // Volume up/down/mute
-    case textInput             // Can receive text
-    case cursorNavigation      // D-pad style navigation
-    case displayControl        // Brightness, sleep, etc.
-}
-
-enum ConnectionType {
-    case homeKit               // Via Home.framework
-    case mediaRemote           // Via MediaRemote.framework (Apple TV)
-    case bluetoothLE           // Direct BLE connection
-    case airPlay               // Screen mirroring targets
-}
+```
+┌──────────────────────────────────────────────────────────────┐
+│  UI layer (SwiftUI)                                            │
+│   TouchSurfaceView   ──gesture──┐      RemoteControlView       │
+│   (gesture surface)             │      (buttons, slider)       │
+│                                 │              │               │
+│                                 ▼              ▼               │
+│                        UniversalCommand (enum, protocol-free)  │
+├──────────────────────────────────────────────────────────────┤
+│  Service layer                                                 │
+│   MediaControlService.shared.execute(_:)   @MainActor          │
+│         dispatches by command category                         │
+├──────────────────────────────────────────────────────────────┤
+│  macOS system APIs                                             │
+│   NSEvent (systemDefined)  ·  CoreAudio  ·  CGEvent            │
+│   NSAppleScript  ·  NSHapticFeedbackManager                    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**Analogy**: Think of this like a diplomatic reception. When your app "meets" a device, they exchange credentials and figure out what topics they can discuss. A smart TV might say "I can do power, volume, and media" while a simple smart plug only offers "I can do power."
-
-### Layer 2: The Control Surface
-
-This is where the magic of "more than just tapping buttons" happens. The Control Center remote uses **gesture recognition** on a virtual trackpad:
-
-```swift
-// The touch surface interprets gestures contextually
-struct TouchSurface: View {
-    @State private var gestureState: GestureState = .idle
-    
-    var body: some View {
-        Rectangle()
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        // Small movements = cursor navigation
-                        // Velocity-based = scroll/swipe
-                        interpretGesture(value)
-                    }
-                    .onEnded { value in
-                        // Quick tap vs. long press vs. swipe
-                        finalizeGesture(value)
-                    }
-            )
-    }
-    
-    private func interpretGesture(_ value: DragGesture.Value) {
-        // This is where you can customize behavior:
-        // - Sensitivity curves
-        // - Gesture recognition thresholds  
-        // - Haptic feedback triggers
-    }
-}
-```
-
-**The key insight**: The difference between a "tap" and a "swipe" is just math on touch coordinates over time. You have full control over these thresholds.
-
-### Layer 3: Text Input Detection
-
-Here's where it gets interesting. The Control Center remote knows when to show the keyboard because Apple TV **broadcasts** that a text field is focused. Your app listens for this:
-
-```swift
-// Simplified conceptual model
-class TextInputObserver: ObservableObject {
-    @Published var isTextInputActive: Bool = false
-    @Published var currentTextFieldContent: String = ""
-    
-    // The MediaRemote framework provides notifications
-    // when the paired device's keyboard state changes
-    func startObserving(device: MediaRemoteDevice) {
-        device.textInputStatePublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                self?.isTextInputActive = state.isActive
-                if state.isActive {
-                    // Trigger keyboard presentation
-                    self?.presentKeyboard()
-                }
-            }
-            .store(in: &cancellables)
-    }
-}
-```
-
-**Why this works**: Apple TV (and other AirPlay 2 receivers) implement a protocol where they announce UI state changes. It's like the TV saying "Hey, I'm showing a search box now—anyone want to type for me?"
-
-### Layer 4: Power Control for Displays
-
-This is where HomeKit/Matter shines. Modern smart TVs expose power state as a **characteristic**:
-
-```swift
-// HomeKit model for a television
-class TelevisionAccessory {
-    // These are standard HomeKit characteristics
-    var powerState: HMCharacteristic       // On/Off
-    var activeIdentifier: HMCharacteristic // Which input
-    var sleepDiscoveryMode: HMCharacteristic
-    
-    func powerOff() async throws {
-        try await powerState.writeValue(false)
-    }
-    
-    func sleep() async throws {
-        // Some displays support sleep vs. full power off
-        try await sleepDiscoveryMode.writeValue(
-            HMCharacteristicValueSleepDiscoveryMode.notDiscoverable
-        )
-    }
-}
-```
-
-**Important distinction**: "Power off" vs. "Sleep" vs. "Screen off" are different things:
-- **Power off**: Device fully shuts down (slow to wake)
-- **Sleep**: Low-power state, quick wake (like closing a laptop)
-- **Screen off**: Display dark but device fully running
-
-Your app should expose all three where supported.
+The UI never touches system APIs directly. It only builds a `UniversalCommand` and hands it to the service. This keeps gesture/button code declarative and puts every privileged operation in one file.
 
 ---
 
-## Data Model
+## Layer 1: The command model
+
+`Models/Command.swift` defines the vocabulary of the app. `UniversalCommand` is a protocol-agnostic enum; each case wraps a category-specific action enum.
 
 ```swift
-// Your app's core data types
-
-struct ControlledDevice: Identifiable, Codable {
-    let id: UUID
-    var name: String
-    var room: String?
-    var deviceType: DeviceType
-    var connectionInfo: ConnectionInfo
-    var capabilities: Set<DeviceCapability>
-    var lastSeen: Date
-    var customizations: DeviceCustomizations
-}
-
-struct DeviceCustomizations: Codable {
-    var gestureSensitivity: Double = 1.0      // 0.5 = less sensitive, 2.0 = more
-    var hapticFeedbackEnabled: Bool = true
-    var favoriteActions: [QuickAction] = []
-    var buttonMapping: [PhysicalButton: Action]? // For BLE remotes
-}
-
-enum DeviceType: String, Codable {
-    case television
-    case speaker
-    case streamingBox       // Apple TV, Roku, etc.
-    case computer           // Mac
-    case smartDisplay       // HomePod with screen, etc.
-    case generic
-}
-
-struct ConnectionInfo: Codable {
-    var homeKitAccessoryID: UUID?
-    var blePeripheralID: UUID?
-    var airPlayDeviceID: String?
-    var ipAddress: String?
-    var lastSuccessfulProtocol: ConnectionType?
-}
-```
-
----
-
-## The Protocol Bridge Pattern
-
-Since you're dealing with multiple connection types, I recommend a **bridge pattern** that normalizes commands:
-
-```swift
-// Abstract command that works across all protocols
-enum UniversalCommand {
-    case power(PowerAction)
-    case navigation(NavigationAction)
+enum UniversalCommand: Equatable {
     case media(MediaAction)
-    case text(TextAction)
     case volume(VolumeAction)
+    case navigation(NavigationAction)
+    case system(SystemAction)
 }
+```
 
-enum PowerAction {
-    case on, off, toggle, sleep, wake
-}
+The action enums:
 
-enum NavigationAction {
-    case up, down, left, right
-    case select, back, home, menu
-    case scroll(dx: CGFloat, dy: CGFloat)
-}
+| Enum | Cases | Notes |
+|------|-------|-------|
+| `MediaAction` | `playPause`, `next`, `previous`, `fastForward`, `rewind` | `String`-backed, `CaseIterable`; each has a `systemImageName` (SF Symbol) |
+| `VolumeAction` | `up`, `down`, `mute`, `setLevel` | Same shape; `setLevel` is currently unimplemented (see rough edges) |
+| `NavigationAction` | `up`, `down`, `left`, `right`, `select`, `back`, `scroll(dx:dy:)` | `Equatable` (carries scroll deltas); has a `description` string |
+| `SystemAction` | `brightnessUp`, `brightnessDown`, `sleep`, `lock` | `String`-backed, `CaseIterable`, `systemImageName` |
 
-// Each protocol implements its own translator
-protocol CommandTranslator {
-    func translate(_ command: UniversalCommand) -> ProtocolSpecificCommand
-    func send(_ command: ProtocolSpecificCommand) async throws
-}
+**Design intent:** to add a new controllable action you add a case here, handle it in `MediaControlService`, and optionally surface it in the UI. The `rawValue` display string + `systemImageName` convention lets buttons render uniformly and lets the status line show a human-readable label for free.
 
-class HomeKitTranslator: CommandTranslator {
-    func translate(_ command: UniversalCommand) -> ProtocolSpecificCommand {
-        switch command {
-        case .power(.off):
-            return .homeKit(.writeCharacteristic(powerState, value: false))
-        // ... etc
-        }
+---
+
+## Layer 2: The control service
+
+`Services/MediaControlService.swift` is the only place that calls system APIs. It is a `@MainActor`, `ObservableObject` **singleton** (`MediaControlService.shared`) that publishes UI state:
+
+```swift
+@Published var lastCommand: String = "Ready"
+@Published var currentVolume: Float = 0.5
+@Published var isMuted: Bool = false
+```
+
+Everything enters through one `async` method that dispatches by category:
+
+```swift
+func execute(_ command: UniversalCommand) async {
+    switch command {
+    case .media(let a):      await executeMediaAction(a)
+    case .volume(let a):     await executeVolumeAction(a)
+    case .navigation(let a): await executeNavigationAction(a)
+    case .system(let a):     await executeSystemAction(a)
     }
 }
-
-class MediaRemoteTranslator: CommandTranslator {
-    // Translates to MediaRemote.framework calls
-}
 ```
 
-**Why this matters for you**: When you want to add a new device type or protocol, you only need to write a new translator. The rest of your app stays unchanged.
+### How each category reaches the OS
+
+- **Media keys** (`play/pause`, `next`, `previous`, `fast-forward`, `rewind`) and **brightness** are sent as low-level HID media-key events. The service builds an `NSEvent.otherEvent(with: .systemDefined, …)` pair (key-down then key-up) using the private `NX_KEYTYPE_*` constants from Carbon, packs the key code into `data1`, sets the `0xa00`/`0xb00` modifier masks and subtype `8`, and posts each via `event.cgEvent?.post(tap: .cghidEventTap)`.
+
+- **Volume and mute** go through **CoreAudio**. The service resolves the default output device (`kAudioHardwarePropertyDefaultOutputDevice`), then reads/writes `kAudioDevicePropertyVolumeScalar` (clamped to 0.0–1.0, ±0.05 per step) or toggles `kAudioDevicePropertyMute`. After a volume change it refreshes `currentVolume` from the system so the published state stays truthful.
+
+- **Navigation** maps arrows/select/back to virtual key codes (up 126, down 125, left 123, right 124, return 36, delete 51) synthesized with `CGEvent(keyboardEventSource:virtualKey:keyDown:)`. `scroll(dx:dy:)` posts a pixel-unit `CGEvent(scrollWheelEvent2Source:…)`.
+
+- **System** actions split: brightness reuses the media-key path; `sleep` and `lock` run **AppleScript** via `NSAppleScript` (`tell application "System Events" to sleep`, and a `⌃⌘Q` keystroke to lock).
+
+Every handler sets `lastCommand` to a display string so the UI status line reflects the most recent action.
 
 ---
 
-## Radio Safety (Addressing Your Concern)
+## Layer 3: Gesture recognition
 
-You mentioned wanting signals in the radio wave spectrum to avoid harm. Good news: **this is already guaranteed by the physics of Wi-Fi and Bluetooth**.
+`Views/TouchSurfaceView.swift` turns raw drag data into a discrete gesture, then into a command. It uses a single `DragGesture(minimumDistance: 0)` and tracks progress in a `GestureState`.
 
-| Radiation Type | Frequency | Effect on Humans |
-|---------------|-----------|------------------|
-| Ionizing (X-rays, gamma) | > 10^15 Hz | Damages DNA ⚠️ |
-| UV light | ~10^15 Hz | Skin damage at high exposure |
-| Visible light | ~10^14 Hz | Safe |
-| Infrared (old remotes) | ~10^13 Hz | Safe (heat at high power) |
-| **Wi-Fi/Bluetooth** | **2.4 × 10^9 Hz** | **Completely safe** ✓ |
-| FM Radio | ~10^8 Hz | Safe |
+### Supporting types (`Models/GestureType.swift`)
 
-Your iPhone's transmit power is about **1-100 milliwatts**. For comparison, holding your phone to your ear during a call exposes you to more RF energy than any smart home control ever would.
+- **`GestureType`** — the recognized gesture: `tap`, `longPress`, `swipeUp/Down/Left/Right`, `scroll(dx:dy:)`, `none`. Carries a `description` for display.
+- **`GestureConfiguration`** — tunable thresholds:
 
-**No additional safety measures needed**—Apple's hardware is already FCC certified for safe operation.
+  | Field | Default | Meaning |
+  |-------|---------|---------|
+  | `swipeThreshold` | 50.0 pt | minimum distance to count as a swipe |
+  | `longPressDuration` | 0.5 s | hold time for a long press |
+  | `tapMaxMovement` | 10.0 pt | max drift still counted as a tap |
+  | `swipeVelocityThreshold` | 300.0 pt/s | swipe-vs-scroll velocity cutoff |
+  | `scrollSensitivity` | 1.0 | scroll delta multiplier |
 
----
+- **`GestureState`** — mutable per-drag record (`startLocation`, `currentLocation`, `startTime`, `isActive`) with computed `translation`, `distance`, `duration`, and `velocity`, plus `reset()`.
 
-## Project Structure
+### Classification (`recognizeGesture`)
 
-```
-UniversalRemote/
-├── App/
-│   ├── UniversalRemoteApp.swift
-│   └── AppDelegate.swift           // For background modes
-│
-├── Core/
-│   ├── Models/
-│   │   ├── Device.swift
-│   │   ├── Command.swift
-│   │   └── Capability.swift
-│   │
-│   ├── Services/
-│   │   ├── DeviceDiscoveryService.swift
-│   │   ├── ConnectionManager.swift
-│   │   └── CommandDispatcher.swift
-│   │
-│   └── Protocols/
-│       ├── HomeKitBridge.swift
-│       ├── MediaRemoteBridge.swift
-│       └── BluetoothLEBridge.swift
-│
-├── Features/
-│   ├── DeviceList/
-│   │   ├── DeviceListView.swift
-│   │   └── DeviceListViewModel.swift
-│   │
-│   ├── RemoteControl/
-│   │   ├── RemoteControlView.swift
-│   │   ├── TouchSurfaceView.swift
-│   │   ├── GestureInterpreter.swift
-│   │   └── RemoteControlViewModel.swift
-│   │
-│   └── TextInput/
-│       ├── RemoteKeyboardView.swift
-│       └── TextInputObserver.swift
-│
-├── Utilities/
-│   ├── HapticEngine.swift
-│   └── Logger.swift
-│
-└── Resources/
-    ├── Info.plist                  // Privacy descriptions, background modes
-    └── Entitlements.plist          // HomeKit, Bluetooth, etc.
-```
+On gesture end, the surface classifies in priority order:
+
+1. **Long press** — `distance < tapMaxMovement` **and** `duration > longPressDuration`
+2. **Tap** — `distance < tapMaxMovement` (short)
+3. **Swipe** — total velocity `> swipeVelocityThreshold`; dominant axis and sign choose the direction
+4. **Scroll** — anything else (low-velocity drag), carrying the raw translation as deltas
+
+### Gesture → command mapping (`executeGesture`)
+
+| Gesture | Command |
+|---------|---------|
+| Tap | `.media(.playPause)` |
+| Long press | `.navigation(.back)` |
+| Swipe up | `.volume(.up)` |
+| Swipe down | `.volume(.down)` |
+| Swipe left | `.media(.previous)` |
+| Swipe right | `.media(.next)` |
+| Scroll | `.navigation(.scroll(dx: dx*0.5, dy: dy*0.5))` |
+
+The surface also gives live visual feedback (a press indicator, the gesture label, and Δx/Δy readouts) and fires `HapticEngine.shared.selection()` on release.
 
 ---
 
-## Required Entitlements & Permissions
+## Layer 4: UI composition
 
-```xml
-<!-- Info.plist additions -->
-<key>NSHomeKitUsageDescription</key>
-<string>Control your smart home devices</string>
-
-<key>NSBluetoothAlwaysUsageDescription</key>
-<string>Connect to Bluetooth devices</string>
-
-<key>NSLocalNetworkUsageDescription</key>
-<string>Discover and control devices on your network</string>
-
-<key>NSBonjourServices</key>
-<array>
-    <string>_hap._tcp</string>           <!-- HomeKit -->
-    <string>_airplay._tcp</string>       <!-- AirPlay -->
-    <string>_raop._tcp</string>          <!-- Remote Audio -->
-    <string>_matter._tcp</string>        <!-- Matter -->
-</array>
-
-<key>UIBackgroundModes</key>
-<array>
-    <string>bluetooth-central</string>
-    <string>external-accessory</string>
-</array>
-```
+- **`App/MacRemoteApp.swift`** — `@main` SwiftUI `App`; a single `WindowGroup` with a hidden title bar and content-sized window.
+- **`Views/ContentView.swift`** — root view; wraps `RemoteControlView` and pins the window size (≈400–500 × 800–1000).
+- **`Views/RemoteControlView.swift`** — the full remote: header, the touch surface, a volume slider + mute, media buttons (previous / play-pause / next), system buttons (dim / bright / lock), and a status line bound to `mediaService.lastCommand`. Buttons construct commands and call the service inside `Task { await … }`, with `HapticEngine.shared.light()` on press.
+- **`Utilities/HapticEngine.swift`** — singleton over `NSHapticFeedbackManager.defaultPerformer` exposing `light/medium/heavy/selection/success/error` (trackpad haptics only).
 
 ---
 
-## Where You Can Customize & Extend
+## Platform, build, and permissions
 
-1. **Gesture Recognition** (`GestureInterpreter.swift`): Tune sensitivity curves, add custom gestures, change swipe thresholds
+- **Language / UI:** Swift 5.0, SwiftUI.
+- **Deployment target:** macOS 13.0 (`MACOSX_DEPLOYMENT_TARGET = 13.0`).
+- **Bundle identifier:** `com.example.MacRemote`. `Info.plist` is checked in (`GENERATE_INFOPLIST_FILE = NO`); category is Utilities.
+- **Frameworks:** AppKit, CoreAudio, Carbon, CoreGraphics (`CGEvent`) — no third-party dependencies, no package manager, no test target, no CI.
+- **Build:** open `MacRemote/MacRemote.xcodeproj` in Xcode and Run (⌘R), or `xcodebuild -project MacRemote/MacRemote.xcodeproj -scheme MacRemote build` on a Mac with Xcode.
 
-2. **Command Mapping**: The `UniversalCommand` → protocol translation is where you define what each action *means* for each device type
+### Runtime permissions
 
-3. **Device Profiles**: Create preset configurations for common devices (Samsung TV, LG TV, Sonos, etc.) with optimized settings
+- **Accessibility** (System Settings → Privacy & Security → Accessibility) — required for synthesized key/scroll HID events to be delivered.
+- **Automation / Apple Events** — required for `sleep` and `lock`, which drive System Events via AppleScript.
 
-4. **Automation Hooks**: Add shortcuts integration so users can trigger multi-device scenes ("Movie mode" = dim lights + TV on + soundbar to surround)
+### Sandbox tension (known)
 
-5. **Alternative Protocols**: The bridge pattern makes it straightforward to add MQTT, HTTP APIs, or other protocols for non-Apple devices
+`MacRemote.entitlements` enables **App Sandbox** (`com.apple.security.app-sandbox`) along with `com.apple.security.automation.apple-events` and user-selected read-only file access. Synthesizing global HID events and driving System Events generally depends on Accessibility permission and can conflict with a strict sandbox. This tension is unresolved in the proof of concept; any change touching distribution, entitlements, or event delivery should treat it deliberately rather than flipping the sandbox flag silently, since it affects the app's security posture.
 
 ---
 
-## Next Steps
+## Known rough edges
 
-1. **Prototype the touch surface first**—this is the core UX differentiator
-2. **Start with Apple TV integration** (MediaRemote framework) since it's the most feature-complete
-3. **Add HomeKit discovery** for power control of Matter/HomeKit devices
-4. **Layer in the keyboard detection** once basic navigation works
+These are current limitations, not intentional design:
 
-Would you like me to elaborate on any of these layers, or shall we start drafting actual implementation code for a specific component?
+- **Volume slider is not absolute.** `VolumeAction.setLevel` exists but is a no-op (`break`) in the service, and the slider in `RemoteControlView` is wired so that dragging it simply issues `.volume(.up)`. A proper implementation needs a `setLevel(Float)` path from the slider through `UniversalCommand` into a CoreAudio absolute-volume write.
+- **Private media-key event synthesis is fragile.** The `NX_KEYTYPE_*` constants and the specific `NSEvent` subtype/modifier-mask packing are undocumented; behavior can change across macOS versions, so test on-device after edits.
+- **Volume state can drift.** `currentVolume`/`isMuted` are refreshed after the app's own writes, but nothing observes external system volume changes, so the slider may lag the true system volume until the next command.
+- **macOS only.** Despite the parent repo's iPhone/iPad framing, this target is a Mac app controlling the Mac it runs on.
+
+---
+
+## Possible future direction
+
+The original ambition — a *networked* universal remote that discovers and controls Apple TV (MediaRemote), HomeKit/Matter accessories, and Bluetooth LE devices over Wi-Fi — would reuse the one abstraction that already exists here: `UniversalCommand`. The natural extension is a **protocol-translator layer** behind the service, where each transport (HomeKit, MediaRemote, BLE) implements a translator from `UniversalCommand` to its wire format, and the current local-event path becomes just one translator among several. None of that is built today; MacRemote deliberately stays a single-file-per-concern, local-only proof of concept.
