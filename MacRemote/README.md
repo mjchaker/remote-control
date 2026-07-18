@@ -51,7 +51,7 @@ On first launch, macOS will ask for permissions:
 ## Usage
 
 ### Touch Surface
-The large gray area is an interactive touch surface that recognizes different gestures:
+The touch surface is an interactive area that recognizes different gestures:
 
 - Perform gestures by clicking and dragging on the touch surface
 - Visual feedback shows the current gesture and translation values
@@ -59,11 +59,25 @@ The large gray area is an interactive touch surface that recognizes different ge
 
 ### Control Buttons
 - Use the media control buttons for quick access to common functions
-- Volume slider for precise volume adjustment
+- Volume slider sets the system volume directly; the mute toggle reflects the current state
 - System controls for brightness and screen lock
+
+### Keyboard Shortcuts
+Every action is also available from the **Controls** menu in the menu bar:
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘↩ | Play/Pause |
+| ⌘← / ⌘→ | Previous / Next track |
+| ⌘↑ / ⌘↓ | Volume up / down |
+| ⇧⌘M | Mute |
+| ⌘L | Lock screen |
 
 ### Status Display
 The bottom status bar shows the last executed command.
+
+### Appearance
+The interface uses standard macOS controls and semantic colors, so it adapts automatically to Light/Dark mode and your accent color.
 
 ## Architecture
 
@@ -145,9 +159,10 @@ case .tap:
 - Check that a media app (Music, Spotify, etc.) is running
 - Try playing media first, then use controls
 
-### Volume slider not updating
-- The slider shows the last set value, not real-time system volume
-- Use the volume up/down buttons for reliable feedback
+### Volume slider out of sync
+- The slider sets the system volume directly and re-reads it on launch and after each in-app command
+- It does **not** live-track volume changes made outside the app (hardware keys, other apps), so it can lag until the next in-app command
+- Use the app's volume up/down (or the ⌘↑ / ⌘↓ shortcuts) to resync
 
 ### Gestures not recognized
 - Try adjusting gesture thresholds in `GestureConfiguration`

@@ -10,8 +10,9 @@ import SwiftUI
 struct ContentView: View {
     var body: some View {
         RemoteControlView()
-            .frame(minWidth: 400, idealWidth: 450, maxWidth: 500)
-            .frame(minHeight: 800, idealHeight: 900, maxHeight: 1000)
+            // Set a comfortable minimum; the window can grow from here and the
+            // touch surface expands to fill the extra space.
+            .frame(minWidth: 360, idealWidth: 400, minHeight: 600, idealHeight: 680)
     }
 }
 

@@ -17,48 +17,42 @@ struct TouchSurfaceView: View {
 
     var body: some View {
         ZStack {
-            // Background with gradient
-            RoundedRectangle(cornerRadius: 20)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.gray.opacity(0.2),
-                            Color.gray.opacity(0.3)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            // Surface uses a system material and separator so it adapts to
+            // Light/Dark appearance rather than hardcoded colors.
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.quaternary)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                 )
 
             // Visual feedback
             VStack(spacing: 8) {
                 if isPressed {
                     Circle()
-                        .fill(Color.blue.opacity(0.3))
+                        .fill(.tint.opacity(0.3))
                         .frame(width: 60, height: 60)
                         .scaleEffect(isPressed ? 1.0 : 0.5)
                         .animation(.spring(response: 0.3), value: isPressed)
                 }
 
                 Text(lastGesture.description)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.white.opacity(0.8))
-                    .opacity(isPressed ? 1.0 : 0.5)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+                    .opacity(isPressed ? 1.0 : 0.6)
 
                 if gestureState.isActive {
                     VStack(spacing: 4) {
                         Text("Δx: \(Int(gestureState.translation.width))")
                         Text("Δy: \(Int(gestureState.translation.height))")
                     }
-                    .font(.system(size: 10, weight: .light, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
                 }
             }
         }
+        .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
@@ -68,6 +62,11 @@ struct TouchSurfaceView: View {
                     handleGestureEnd(value)
                 }
         )
+        // Drag gestures can't be operated by VoiceOver; describe the surface
+        // and point users to the equivalent buttons below.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Trackpad")
+        .accessibilityHint("Tap to play or pause, swipe up or down for volume, swipe left or right to change tracks, and drag to scroll. The buttons below perform the same actions.")
     }
 
     // MARK: - Gesture Handling

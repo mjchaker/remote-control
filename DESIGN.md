@@ -55,7 +55,7 @@ The action enums:
 | Enum | Cases | Notes |
 |------|-------|-------|
 | `MediaAction` | `playPause`, `next`, `previous`, `fastForward`, `rewind` | `String`-backed, `CaseIterable`; each has a `systemImageName` (SF Symbol) |
-| `VolumeAction` | `up`, `down`, `mute`, `setLevel` | Same shape; `setLevel` is currently unimplemented (see rough edges) |
+| `VolumeAction` | `up`, `down`, `mute`, `setLevel(Float)` | Plain `Equatable` enum (not `String`-backed, because `setLevel` carries an absolute 0.0–1.0 level); exposes `displayName` + `systemImageName` |
 | `NavigationAction` | `up`, `down`, `left`, `right`, `select`, `back`, `scroll(dx:dy:)` | `Equatable` (carries scroll deltas); has a `description` string |
 | `SystemAction` | `brightnessUp`, `brightnessDown`, `sleep`, `lock` | `String`-backed, `CaseIterable`, `systemImageName` |
 
@@ -90,7 +90,7 @@ func execute(_ command: UniversalCommand) async {
 
 - **Media keys** (`play/pause`, `next`, `previous`, `fast-forward`, `rewind`) and **brightness** are sent as low-level HID media-key events. The service builds an `NSEvent.otherEvent(with: .systemDefined, …)` pair (key-down then key-up) using the private `NX_KEYTYPE_*` constants from Carbon, packs the key code into `data1`, sets the `0xa00`/`0xb00` modifier masks and subtype `8`, and posts each via `event.cgEvent?.post(tap: .cghidEventTap)`.
 
-- **Volume and mute** go through **CoreAudio**. The service resolves the default output device (`kAudioHardwarePropertyDefaultOutputDevice`), then reads/writes `kAudioDevicePropertyVolumeScalar` (clamped to 0.0–1.0, ±0.05 per step) or toggles `kAudioDevicePropertyMute`. After a volume change it refreshes `currentVolume` from the system so the published state stays truthful.
+- **Volume and mute** go through **CoreAudio**, via small helpers (`defaultOutputDevice()`, `readVolume()`, `readMute()`, `setVolume(to:)`, `setMute(_:)`) that resolve the default output device (`kAudioHardwarePropertyDefaultOutputDevice`) and read/write `kAudioDevicePropertyVolumeScalar` / `kAudioDevicePropertyMute`. `up`/`down` adjust by ±0.05, `setLevel(Float)` writes an absolute level (both clamped to 0.0–1.0), and setting a positive level while muted also unmutes. After any volume command — and on launch — the service refreshes `currentVolume` and `isMuted` from the system so published state stays truthful.
 
 - **Navigation** maps arrows/select/back to virtual key codes (up 126, down 125, left 123, right 124, return 36, delete 51) synthesized with `CGEvent(keyboardEventSource:virtualKey:keyDown:)`. `scroll(dx:dy:)` posts a pixel-unit `CGEvent(scrollWheelEvent2Source:…)`.
 
@@ -146,10 +146,19 @@ The surface also gives live visual feedback (a press indicator, the gesture labe
 
 ## Layer 4: UI composition
 
-- **`App/MacRemoteApp.swift`** — `@main` SwiftUI `App`; a single `WindowGroup` with a hidden title bar and content-sized window.
-- **`Views/ContentView.swift`** — root view; wraps `RemoteControlView` and pins the window size (≈400–500 × 800–1000).
-- **`Views/RemoteControlView.swift`** — the full remote: header, the touch surface, a volume slider + mute, media buttons (previous / play-pause / next), system buttons (dim / bright / lock), and a status line bound to `mediaService.lastCommand`. Buttons construct commands and call the service inside `Task { await … }`, with `HapticEngine.shared.light()` on press.
+- **`App/MacRemoteApp.swift`** — `@main` SwiftUI `App`; a single titled `WindowGroup` ("Mac Remote") that is resizable down to its content's minimum size (`.windowResizability(.contentMinSize)`). It also declares a `Controls` menu (`CommandMenu`) mirroring every action with keyboard shortcuts (⌘↩ play/pause, ⌘←/⌘→ tracks, ⌘↑/⌘↓ volume, ⇧⌘M mute, ⌘L lock), so the app is fully keyboard- and menu-navigable.
+- **`Views/ContentView.swift`** — root view; wraps `RemoteControlView` and sets a minimum/ideal size (min ≈360 × 600, ideal ≈400 × 680). The touch surface expands to fill any extra height when the window grows.
+- **`Views/RemoteControlView.swift`** — the full remote, laid out with standard `GroupBox` sections (Volume / Media / System) on the system window background so it adapts to Light/Dark. The volume slider is bound to `currentVolume` and issues `.volume(.setLevel(_:))` as it moves; a `.button`-style `Toggle` reflects and flips mute. Media buttons (previous / play-pause / next) and system buttons (dim / bright / lock) use `.bordered`/`.borderedProminent` styles, carry `.help(_:)` tooltips and `.accessibilityLabel`s, and call the service inside `Task { await … }` with `HapticEngine.shared.light()` on press. A status line binds to `mediaService.lastCommand`.
 - **`Utilities/HapticEngine.swift`** — singleton over `NSHapticFeedbackManager.defaultPerformer` exposing `light/medium/heavy/selection/success/error` (trackpad haptics only).
+
+### Interface conventions (macOS HIG)
+
+The UI follows Apple's macOS Human Interface Guidelines rather than a custom theme:
+
+- **Adaptive appearance** — semantic colors and materials (`.primary`/`.secondary`/`.tint`/`.quaternary`, `Color(nsColor:)`) instead of hardcoded RGB, so the app tracks Light/Dark mode and the user's accent color. No fixed gradients or title-bar hiding.
+- **Standard controls & structure** — `GroupBox` sections, `.bordered`/`.borderedProminent` buttons, native `Slider` and `Toggle`, and semantic typography (`.title2`, `.subheadline`, `.footnote`).
+- **Full keyboard access** — the `Controls` menu bar item exposes every command with a shortcut; controls that reflect state (volume, mute) are two-way bound.
+- **Accessibility** — interactive views carry `.help(_:)` tooltips and `.accessibilityLabel`/`.accessibilityHint`. Because a drag surface can't be driven by VoiceOver, the touch surface is a single labeled element that points users at the equivalent buttons, which provide the accessible path.
 
 ---
 
@@ -176,9 +185,9 @@ The surface also gives live visual feedback (a press indicator, the gesture labe
 
 These are current limitations, not intentional design:
 
-- **Volume slider is not absolute.** `VolumeAction.setLevel` exists but is a no-op (`break`) in the service, and the slider in `RemoteControlView` is wired so that dragging it simply issues `.volume(.up)`. A proper implementation needs a `setLevel(Float)` path from the slider through `UniversalCommand` into a CoreAudio absolute-volume write.
 - **Private media-key event synthesis is fragile.** The `NX_KEYTYPE_*` constants and the specific `NSEvent` subtype/modifier-mask packing are undocumented; behavior can change across macOS versions, so test on-device after edits.
-- **Volume state can drift.** `currentVolume`/`isMuted` are refreshed after the app's own writes, but nothing observes external system volume changes, so the slider may lag the true system volume until the next command.
+- **Volume state can drift from external changes.** `currentVolume`/`isMuted` are refreshed on launch and after the app's own volume commands, but nothing observes volume changes made outside the app (hardware keys, other apps), so the slider may lag the true system volume until the next in-app command.
+- **`setMute`/`setVolume` are best-effort.** They only update published state when the CoreAudio write returns `noErr`; on an output device that doesn't expose the volume or mute property, the control will appear to do nothing rather than fake success.
 - **macOS only.** Despite the parent repo's iPhone/iPad framing, this target is a Mac app controlling the Mac it runs on.
 
 ---

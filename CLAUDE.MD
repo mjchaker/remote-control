@@ -45,7 +45,7 @@ remote-control/
 ## Tech stack (MacRemote)
 
 - **Language**: Swift 5.0 (`SWIFT_VERSION = 5.0` in the project)
-- **UI**: SwiftUI (macOS app, `WindowGroup`, hidden title bar, content-sized window)
+- **UI**: SwiftUI (macOS app, `WindowGroup` with a standard titled window, resizable down to its content's minimum size; adaptive Light/Dark appearance via semantic colors)
 - **Deployment target**: macOS 13.0 (`MACOSX_DEPLOYMENT_TARGET = 13.0`)
 - **Bundle ID**: `com.example.MacRemote`
 - **Info.plist**: checked-in file, `GENERATE_INFOPLIST_FILE = NO`
@@ -133,13 +133,14 @@ The entitlements file (`MacRemote.entitlements`) enables **App Sandbox** (`com.a
 
 - **Route everything through `UniversalCommand`.** UI code (views, buttons, gestures) must construct a `UniversalCommand` and call `MediaControlService.shared.execute(_:)`. Do not call `CGEvent`, `CoreAudio`, `NSAppleScript`, etc. from a view. To add a capability: add a case to the appropriate action enum in `Command.swift`, handle it in the matching `execute…Action` method in `MediaControlService.swift`, then wire up UI/gesture triggers.
 - **`MediaControlService` is `@MainActor` and a singleton.** Access it as `MediaControlService.shared`. Its `execute(_:)` is `async`; call it inside a `Task { await … }`.
-- **Adding an action enum case** that conforms to `CaseIterable` with a `rawValue` display string and a `systemImageName` (SF Symbol) keeps it consistent with existing `MediaAction`/`VolumeAction`/`SystemAction` and lets the UI render it uniformly.
+- **Adding an action enum case**: `MediaAction` and `SystemAction` are `String`-backed `CaseIterable` enums whose `rawValue` is the display string, plus a `systemImageName` (SF Symbol). `VolumeAction` is a plain `Equatable` enum (its `.setLevel(Float)` case carries an associated value, so it can't be `String`-backed) exposing a `displayName` and `systemImageName`. Follow whichever pattern fits — if a new case needs an associated value, give the enum a `displayName` like `VolumeAction`; otherwise the `String`/`CaseIterable` shape is fine. Either way the service uses the display string for `lastCommand` and the UI uses `systemImageName`.
 - **Style**: SwiftUI throughout; `async/await` (not completion handlers); file header comment blocks in the existing `//  Name.swift` style; SF Symbols for iconography; each view file ends with a `#Preview`.
+- **Follow macOS HIG for UI.** Use semantic colors and materials (`.primary`/`.secondary`/`.tint`/`.quaternary`, `Color(nsColor:)`) so the app adapts to Light/Dark and accent color — never hardcode RGB/opacity for chrome. Use semantic fonts (`.title2`, `.headline`, `.footnote`), standard controls (`GroupBox` sections, `.bordered`/`.borderedProminent` buttons, `Slider`, `Toggle`), and add `.help(_:)` tooltips plus `.accessibilityLabel`/`.accessibilityHint` to interactive views. Every action is also exposed in the `Controls` menu (`MacRemoteApp`) with a keyboard shortcut — when you add a control, add its menu item too so the app stays fully keyboard- and VoiceOver-navigable.
 - **Haptics**: use `HapticEngine.shared` for feedback on interactions, matching existing calls (`.selection()` on gesture end, `.light()` on button press).
 
 ### Known rough edges (don't treat as intentional)
 
-- The volume `Slider` in `RemoteControlView` is bound such that dragging it just calls `.volume(.up)` — it does not set an absolute level. `VolumeAction.setLevel` exists but is a no-op (`break`) in the service. A real slider needs a `setLevel(Float)` path through the command/service.
+- Volume/mute state does not live-track *external* changes: `currentVolume`/`isMuted` are read back from CoreAudio on launch and after each volume command the app issues, but nothing observes volume changes made outside the app (e.g. hardware keys), so the slider can lag reality until the next in-app command. (The slider itself now sets an absolute level via `VolumeAction.setLevel(Float)` — the earlier "no-op slider" issue is fixed.)
 - Media/brightness key synthesis relies on private `NX_KEYTYPE_*` constants and specific `NSEvent` subtypes/modifier masks; treat these as fragile and test on-device after changes.
 
 ## Git / workflow notes

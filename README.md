@@ -8,8 +8,10 @@ The working app lives in [`MacRemote/`](MacRemote/) and is a **proof of concept*
 
 - **Gesture touch surface** — tap to play/pause, long-press for back, swipe up/down for volume, swipe left/right for previous/next track, drag to scroll.
 - **Media controls** — play/pause, next/previous track, fast-forward/rewind (via system media keys).
-- **Volume** — up/down and mute through CoreAudio, with a live status readout.
+- **Volume** — a slider that sets the system level directly, plus up/down and a mute toggle, through CoreAudio.
 - **System** — brightness up/down, screen lock (and system sleep supported in the service layer).
+- **Keyboard & menu** — every action is in the **Controls** menu with a keyboard shortcut for full keyboard access.
+- **Native macOS UI** — standard controls and semantic colors that adapt to Light/Dark mode and your accent color.
 - **Haptics** — trackpad feedback on gestures and button presses.
 
 ## Requirements
