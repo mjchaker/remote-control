@@ -12,130 +12,104 @@ struct RemoteControlView: View {
     @StateObject private var mediaService = MediaControlService.shared
 
     var body: some View {
-        VStack(spacing: 20) {
-            // Header
+        VStack(spacing: 16) {
             headerSection
 
-            // Touch Surface
             TouchSurfaceView()
-                .frame(height: 400)
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
 
-            // Volume Control
             volumeSection
+            mediaSection
+            systemSection
 
-            // Media Control Buttons
-            mediaButtonsSection
-
-            // System Control Buttons
-            systemButtonsSection
-
-            // Status
             statusSection
         }
-        .padding(24)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.1, green: 0.1, blue: 0.15),
-                    Color(red: 0.15, green: 0.15, blue: 0.2)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .padding()
+        // No custom background: use the standard window background so the app
+        // adapts to Light/Dark appearance and accent color automatically.
     }
 
     // MARK: - Header
 
     private var headerSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 2) {
             Text("Mac Remote")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundColor(.white)
+                .font(.title2)
+                .fontWeight(.semibold)
 
-            Text("Gesture-based control for your Mac")
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(.white.opacity(0.6))
+            Text("Gesture control for your Mac")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: - Volume Section
+    // MARK: - Volume
 
     private var volumeSection: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Image(systemName: "speaker.fill")
-                    .foregroundColor(.white.opacity(0.8))
-                    .frame(width: 24)
+        GroupBox("Volume") {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(systemName: "speaker.fill")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
 
-                Slider(value: Binding(
-                    get: { Double(mediaService.currentVolume) },
-                    set: { newValue in
-                        Task {
-                            _ = Float(newValue) - mediaService.currentVolume
-                            await mediaService.execute(.volume(.up))
-                            // Would need to implement setLevel action for actual slider control
-                        }
-                    }
-                ), in: 0...1)
-                .tint(.blue)
+                    Slider(value: volumeBinding, in: 0...1)
+                        .accessibilityLabel("Volume")
 
-                Image(systemName: "speaker.wave.3.fill")
-                    .foregroundColor(.white.opacity(0.8))
-                    .frame(width: 24)
-            }
+                    Image(systemName: "speaker.wave.3.fill")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
 
-            HStack(spacing: 12) {
-                controlButton(
-                    icon: "speaker.slash.fill",
-                    title: "Mute"
-                ) {
-                    await mediaService.execute(.volume(.mute))
+                    Text(volumePercentText)
+                        .font(.body)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                        .accessibilityHidden(true)
                 }
 
-                Spacer()
-
-                Text("\(Int(mediaService.currentVolume * 100))%")
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 60)
+                Toggle(isOn: muteBinding) {
+                    Label(
+                        mediaService.isMuted ? "Muted" : "Mute",
+                        systemImage: mediaService.isMuted ? "speaker.slash.fill" : "speaker.fill"
+                    )
+                }
+                .toggleStyle(.button)
+                .controlSize(.large)
+                .help("Mute or unmute system audio (⇧⌘M)")
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.05))
-        )
     }
 
-    // MARK: - Media Buttons
+    // MARK: - Media
 
-    private var mediaButtonsSection: some View {
-        VStack(spacing: 12) {
-            Text("Media Controls")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white.opacity(0.6))
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 16) {
-                controlButton(
-                    icon: MediaAction.previous.systemImageName,
-                    title: "Previous"
+    private var mediaSection: some View {
+        GroupBox("Media") {
+            HStack(spacing: 12) {
+                commandButton(
+                    "Previous",
+                    systemImage: "backward.fill",
+                    help: "Previous track (⌘←)"
                 ) {
                     await mediaService.execute(.media(.previous))
                 }
 
-                controlButton(
-                    icon: MediaAction.playPause.systemImageName,
-                    title: "Play/Pause",
-                    primary: true
+                commandButton(
+                    "Play/Pause",
+                    systemImage: "playpause.fill",
+                    prominent: true,
+                    help: "Play or pause (⌘↩)"
                 ) {
                     await mediaService.execute(.media(.playPause))
                 }
 
-                controlButton(
-                    icon: MediaAction.next.systemImageName,
-                    title: "Next"
+                commandButton(
+                    "Next",
+                    systemImage: "forward.fill",
+                    help: "Next track (⌘→)"
                 ) {
                     await mediaService.execute(.media(.next))
                 }
@@ -143,33 +117,31 @@ struct RemoteControlView: View {
         }
     }
 
-    // MARK: - System Buttons
+    // MARK: - System
 
-    private var systemButtonsSection: some View {
-        VStack(spacing: 12) {
-            Text("System Controls")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white.opacity(0.6))
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 16) {
-                controlButton(
-                    icon: SystemAction.brightnessDown.systemImageName,
-                    title: "Dim"
+    private var systemSection: some View {
+        GroupBox("System") {
+            HStack(spacing: 12) {
+                commandButton(
+                    "Dim",
+                    systemImage: "sun.min.fill",
+                    help: "Decrease display brightness"
                 ) {
                     await mediaService.execute(.system(.brightnessDown))
                 }
 
-                controlButton(
-                    icon: SystemAction.brightnessUp.systemImageName,
-                    title: "Bright"
+                commandButton(
+                    "Brighten",
+                    systemImage: "sun.max.fill",
+                    help: "Increase display brightness"
                 ) {
                     await mediaService.execute(.system(.brightnessUp))
                 }
 
-                controlButton(
-                    icon: SystemAction.lock.systemImageName,
-                    title: "Lock"
+                commandButton(
+                    "Lock",
+                    systemImage: "lock.fill",
+                    help: "Lock the screen (⌘L)"
                 ) {
                     await mediaService.execute(.system(.lock))
                 }
@@ -180,65 +152,77 @@ struct RemoteControlView: View {
     // MARK: - Status
 
     private var statusSection: some View {
-        HStack {
+        HStack(spacing: 8) {
             Circle()
-                .fill(Color.green)
+                .fill(.green)
                 .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
 
             Text(mediaService.lastCommand)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundColor(.white.opacity(0.5))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Spacer()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Last command: \(mediaService.lastCommand)")
     }
 
-    // MARK: - Control Button
+    // MARK: - Bindings
+
+    private var volumeBinding: Binding<Double> {
+        Binding(
+            get: { Double(mediaService.currentVolume) },
+            set: { newValue in
+                Task { await mediaService.execute(.volume(.setLevel(Float(newValue)))) }
+            }
+        )
+    }
+
+    private var muteBinding: Binding<Bool> {
+        Binding(
+            get: { mediaService.isMuted },
+            set: { _ in
+                Task {
+                    HapticEngine.shared.light()
+                    await mediaService.execute(.volume(.mute))
+                }
+            }
+        )
+    }
+
+    private var volumePercentText: String {
+        "\(Int((mediaService.currentVolume * 100).rounded()))%"
+    }
+
+    // MARK: - Reusable command button
 
     @ViewBuilder
-    private func controlButton(
-        icon: String,
-        title: String,
-        primary: Bool = false,
+    private func commandButton(
+        _ title: String,
+        systemImage: String,
+        prominent: Bool = false,
+        help: String,
         action: @escaping () async -> Void
     ) -> some View {
-        Button {
+        let button = Button {
             Task {
                 HapticEngine.shared.light()
                 await action()
             }
         } label: {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: primary ? 28 : 22))
-                    .foregroundColor(.white)
-                    .frame(height: 32)
-
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.8))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(
-                        primary ?
-                        Color.blue.opacity(0.3) :
-                        Color.white.opacity(0.1)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(
-                        primary ?
-                        Color.blue.opacity(0.5) :
-                        Color.white.opacity(0.2),
-                        lineWidth: 1
-                    )
-            )
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.plain)
+        .controlSize(.large)
+        .help(help)
+        .accessibilityLabel(title)
+
+        if prominent {
+            button.buttonStyle(.borderedProminent)
+        } else {
+            button.buttonStyle(.bordered)
+        }
     }
 }
 
@@ -246,5 +230,5 @@ struct RemoteControlView: View {
 
 #Preview {
     RemoteControlView()
-        .frame(width: 400, height: 900)
+        .frame(width: 400, height: 680)
 }

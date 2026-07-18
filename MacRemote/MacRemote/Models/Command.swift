@@ -35,11 +35,21 @@ enum MediaAction: String, CaseIterable {
 }
 
 /// Volume control actions
-enum VolumeAction: String, CaseIterable {
-    case up = "Volume Up"
-    case down = "Volume Down"
-    case mute = "Mute/Unmute"
-    case setLevel = "Set Level"
+enum VolumeAction: Equatable {
+    case up
+    case down
+    case mute
+    /// Set the system output volume to an absolute level (0.0–1.0).
+    case setLevel(Float)
+
+    var displayName: String {
+        switch self {
+        case .up: return "Volume Up"
+        case .down: return "Volume Down"
+        case .mute: return "Mute/Unmute"
+        case .setLevel: return "Set Volume"
+        }
+    }
 
     var systemImageName: String {
         switch self {

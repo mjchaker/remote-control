@@ -95,7 +95,7 @@ class MediaControlService: ObservableObject {
     // MARK: - Volume Actions
 
     private func executeVolumeAction(_ action: VolumeAction) async {
-        lastCommand = action.rawValue
+        lastCommand = action.displayName
 
         switch action {
         case .up:
@@ -104,146 +104,131 @@ class MediaControlService: ObservableObject {
             adjustVolume(by: -0.05)
         case .mute:
             toggleMute()
-        case .setLevel:
-            // This would be used with a slider
-            break
+        case .setLevel(let level):
+            setVolume(to: level)
         }
 
         updateVolumeState()
     }
 
-    /// Adjust system volume
-    private func adjustVolume(by delta: Float) {
-        var outputVolume: Float32 = currentVolume
-        let size = UInt32(MemoryLayout<Float32>.size)
+    // MARK: CoreAudio helpers
 
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var deviceIDSize = UInt32(MemoryLayout.size(ofValue: defaultOutputDeviceID))
+    /// Resolve the system's default audio output device, if any.
+    private func defaultOutputDevice() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
 
-        var deviceIDAddress = AudioObjectPropertyAddress(
+        var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
 
-        AudioObjectGetPropertyData(
+        let status = AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject),
-            &deviceIDAddress,
+            &address,
             0,
             nil,
-            &deviceIDSize,
-            &defaultOutputDeviceID
+            &size,
+            &deviceID
         )
 
-        var volumeAddress = AudioObjectPropertyAddress(
+        return status == noErr ? deviceID : nil
+    }
+
+    /// Read the current output volume scalar (0.0–1.0), if available.
+    private func readVolume() -> Float? {
+        guard let device = defaultOutputDevice() else { return nil }
+
+        var volume: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
 
-        AudioObjectGetPropertyData(
-            defaultOutputDeviceID,
-            &volumeAddress,
-            0,
-            nil,
-            &size,
-            &outputVolume
-        )
-
-        outputVolume = min(max(outputVolume + delta, 0.0), 1.0)
-
-        AudioObjectSetPropertyData(
-            defaultOutputDeviceID,
-            &volumeAddress,
-            0,
-            nil,
-            size,
-            &outputVolume
-        )
-
-        currentVolume = outputVolume
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &volume)
+        return status == noErr ? volume : nil
     }
 
-    /// Toggle system mute
-    private func toggleMute() {
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var deviceIDSize = UInt32(MemoryLayout.size(ofValue: defaultOutputDeviceID))
+    /// Read whether the output device is currently muted, if available.
+    private func readMute() -> Bool? {
+        guard let device = defaultOutputDevice() else { return nil }
 
-        var deviceIDAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &deviceIDAddress,
-            0,
-            nil,
-            &deviceIDSize,
-            &defaultOutputDeviceID
-        )
-
-        var muteAddress = AudioObjectPropertyAddress(
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
 
-        var mute: UInt32 = isMuted ? 0 : 1
-        var size = UInt32(MemoryLayout<UInt32>.size)
-
-        AudioObjectSetPropertyData(
-            defaultOutputDeviceID,
-            &muteAddress,
-            0,
-            nil,
-            size,
-            &mute
-        )
-
-        isMuted = !isMuted
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value)
+        return status == noErr ? (value != 0) : nil
     }
 
-    /// Update current volume state from system
-    private func updateVolumeState() {
-        var outputVolume: Float32 = 0.5
-        var size = UInt32(MemoryLayout<Float32>.size)
+    // MARK: Volume mutation
 
-        var defaultOutputDeviceID = AudioDeviceID(0)
-        var deviceIDSize = UInt32(MemoryLayout.size(ofValue: defaultOutputDeviceID))
+    /// Set the output volume to an absolute level (clamped to 0.0–1.0).
+    private func setVolume(to level: Float) {
+        guard let device = defaultOutputDevice() else { return }
 
-        var deviceIDAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &deviceIDAddress,
-            0,
-            nil,
-            &deviceIDSize,
-            &defaultOutputDeviceID
-        )
-
-        var volumeAddress = AudioObjectPropertyAddress(
+        var value = min(max(level, 0.0), 1.0)
+        let size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
 
-        AudioObjectGetPropertyData(
-            defaultOutputDeviceID,
-            &volumeAddress,
-            0,
-            nil,
-            &size,
-            &outputVolume
+        let status = AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
+        if status == noErr {
+            currentVolume = value
+            // Raising volume from a muted state should unmute, matching hardware keys.
+            if value > 0, isMuted {
+                setMute(false)
+            }
+        }
+    }
+
+    /// Adjust system volume by a relative delta.
+    private func adjustVolume(by delta: Float) {
+        let current = readVolume() ?? currentVolume
+        setVolume(to: current + delta)
+    }
+
+    /// Set the output device mute state.
+    private func setMute(_ muted: Bool) {
+        guard let device = defaultOutputDevice() else { return }
+
+        var value: UInt32 = muted ? 1 : 0
+        let size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
         )
 
-        currentVolume = outputVolume
+        let status = AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
+        if status == noErr {
+            isMuted = muted
+        }
+    }
+
+    /// Toggle system mute.
+    private func toggleMute() {
+        setMute(!isMuted)
+    }
+
+    /// Refresh published volume/mute state from the system.
+    private func updateVolumeState() {
+        if let volume = readVolume() {
+            currentVolume = volume
+        }
+        if let muted = readMute() {
+            isMuted = muted
+        }
     }
 
     // MARK: - Navigation Actions
