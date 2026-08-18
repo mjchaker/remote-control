@@ -230,5 +230,5 @@ struct RemoteControlView: View {
 
 #Preview {
     RemoteControlView()
-        .frame(width: 400, height: 680)
+        .frame(width: 400, height: 740)
 }
