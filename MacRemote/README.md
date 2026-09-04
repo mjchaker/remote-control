@@ -1,80 +1,111 @@
-# MacRemote - Proof of Concept
+# MacRemote
 
-A gesture-based remote control app for macOS that lets you control your Mac using touch gestures and buttons.
+A gesture-based remote control app for macOS that lets you control your Mac using touch gestures, buttons, the menu bar, and keyboard shortcuts.
 
 ## Features
 
 ### Gesture-Based Touch Surface
 - **Tap**: Play/Pause media
-- **Long Press**: Back/Context menu
+- **Long Press**: Back (Delete key)
 - **Swipe Up**: Volume up
 - **Swipe Down**: Volume down
 - **Swipe Left**: Previous track
 - **Swipe Right**: Next track
-- **Scroll**: Navigate/scroll (continuous small movements)
+- **Drag**: Scroll (slow, continuous movement)
 
 ### Media Controls
 - Play/Pause
 - Next/Previous track
-- Fast forward/Rewind
-- Volume control with slider
+- Fast forward/Rewind (Controls menu)
+- Volume slider that follows the real system volume
 - Mute/Unmute
 
 ### System Controls
 - Brightness up/down
 - Lock screen
-- System sleep (implemented in `MediaControlService`; not yet exposed as a button)
+- Sleep (Controls menu)
+
+### Menu Bar Remote
+An optional compact remote in the menu bar (play/pause, tracks, volume, mute, lock) so the window doesn't have to be open. Toggle it in **Settings → General**.
 
 ## Requirements
 
 - macOS 13.0 or later
 - Xcode 15.0 or later
-- Swift 5.9 or later
 
-## Building the Project
+## Building and testing
 
 1. Open `MacRemote.xcodeproj` in Xcode
-2. Select your target device (Mac)
-3. Build and run (⌘R)
+2. Build and run (⌘R), or run the unit tests (⌘U)
+
+From the command line:
+
+```bash
+xcodebuild -project MacRemote.xcodeproj -scheme MacRemote -destination 'platform=macOS' build
+xcodebuild -project MacRemote.xcodeproj -scheme MacRemote -destination 'platform=macOS' test
+```
+
+The `MacRemote` scheme is shared and includes the `MacRemoteTests` unit-test target.
 
 ## First Run Setup
 
-On first launch, macOS will ask for permissions:
+Mac Remote works by synthesizing the same events a keyboard or trackpad would send, which macOS only delivers from apps it trusts.
 
-1. **Accessibility Access**: Required for controlling media playback and system functions
-   - Go to System Settings > Privacy & Security > Accessibility
-   - Add and enable MacRemote
+1. **Accessibility access** — required for every media, navigation, brightness, scroll, and lock command.
+   - The app shows a banner with an **Open System Settings** button until access is granted.
+   - Go to System Settings → Privacy & Security → Accessibility and enable **MacRemote**.
+   - The banner disappears automatically once access is granted; no relaunch needed.
 
-2. **AppleScript Automation**: Required for system control features
-   - Allow when prompted
+2. **Automation access** — required only for **Sleep**, which asks System Events to sleep the Mac.
+   - macOS prompts the first time you use Sleep. Allow it, or manage it under Privacy & Security → Automation.
+
+If a command can't be delivered, the status line at the bottom turns red and explains why.
 
 ## Usage
 
 ### Touch Surface
-The touch surface is an interactive area that recognizes different gestures:
-
 - Perform gestures by clicking and dragging on the touch surface
 - Visual feedback shows the current gesture and translation values
 - Haptic feedback confirms gesture recognition (on supported trackpads)
 
 ### Control Buttons
-- Use the media control buttons for quick access to common functions
+- Media buttons for previous / play-pause / next
 - Volume slider sets the system volume directly; the mute toggle reflects the current state
-- System controls for brightness and screen lock
+- System buttons for brightness and screen lock
 
 ### Keyboard Shortcuts
-Every action is also available from the **Controls** menu in the menu bar:
+Every action is available from the **Controls** menu in the menu bar:
 
 | Shortcut | Action |
 |----------|--------|
 | ⌘↩ | Play/Pause |
 | ⌘← / ⌘→ | Previous / Next track |
+| ⇧⌘← / ⇧⌘→ | Rewind / Fast forward |
 | ⌘↑ / ⌘↓ | Volume up / down |
 | ⇧⌘M | Mute |
+| ⌥⌘↑ / ⌥⌘↓ | Brightness up / down |
 | ⌘L | Lock screen |
+| — | Sleep |
+| ⌘, | Settings |
 
 ### Status Display
-The bottom status bar shows the last executed command.
+The bottom status line shows the last executed command. If a command fails (for example because Accessibility access is missing), the dot turns red and the line shows the reason.
+
+### Settings (⌘,)
+
+**Gestures** — sliders for every recognition threshold, with a **Reset to Defaults** button:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| Tap tolerance | 10 pt | Max pointer movement that still counts as a tap or long press |
+| Long press duration | 0.5 s | Hold time before a press becomes a long press |
+| Swipe distance | 50 pt | Minimum distance a fast drag must cover to be a swipe |
+| Swipe speed | 300 pt/s | Drags faster than this are swipes; slower drags scroll |
+| Scroll sensitivity | 1.0× | Multiplier applied to drag distance |
+
+**General** — show/hide the menu bar remote; enable/disable haptic feedback.
+
+Preferences are stored in `UserDefaults` and survive relaunch; out-of-range values are clamped so a bad preference can never make the surface unresponsive.
 
 ### Appearance
 The interface uses standard macOS controls and semantic colors, so it adapts automatically to Light/Dark mode and your accent color.
@@ -85,102 +116,98 @@ The interface uses standard macOS controls and semantic colors, so it adapts aut
 ```
 MacRemote/
 ├── App/
-│   └── MacRemoteApp.swift          # Main app entry point
+│   └── MacRemoteApp.swift            # @main: window, Controls menu, Settings, MenuBarExtra
 ├── Models/
-│   ├── Command.swift               # Command data models
-│   └── GestureType.swift           # Gesture recognition types
+│   ├── Command.swift                 # UniversalCommand + action enums
+│   ├── GestureType.swift             # GestureType, GestureConfiguration, GestureState
+│   ├── GestureRecognizer.swift       # Pure classifier + gesture→command mapping
+│   └── AppSettings.swift             # Persisted preferences (thresholds, toggles)
 ├── Services/
-│   └── MediaControlService.swift   # Media/system control service
+│   ├── MediaControlService.swift     # Executes commands on the local Mac
+│   └── AccessibilityPermission.swift # Tracks Accessibility trust, polls until granted
 ├── Views/
-│   ├── ContentView.swift           # Main content view
-│   ├── TouchSurfaceView.swift      # Gesture-based touch surface
-│   └── RemoteControlView.swift     # Remote control UI
+│   ├── ContentView.swift             # Root view, window sizing
+│   ├── RemoteControlView.swift       # Main UI: banner, surface, controls, status
+│   ├── TouchSurfaceView.swift        # Gesture surface (collects drag, delegates to recognizer)
+│   ├── SettingsView.swift            # Settings window
+│   └── MenuBarView.swift             # Menu bar extra contents
 └── Utilities/
-    └── HapticEngine.swift          # Haptic feedback
+    └── HapticEngine.swift            # Haptic feedback (honours the Settings toggle)
+
+MacRemoteTests/
+├── GestureRecognizerTests.swift      # Classifier and mapping
+├── AppSettingsTests.swift            # Persistence and clamping
+└── CommandTests.swift                # Command vocabulary
 ```
 
 ### Key Technologies
 
-- **SwiftUI**: Modern declarative UI framework
-- **CoreAudio**: System volume control
-- **Carbon**: Media key event generation
-- **AppKit**: System integration and haptic feedback
-- **CGEvent**: Keyboard and scroll simulation
+- **SwiftUI**: Declarative UI, Settings scene, MenuBarExtra
+- **CoreAudio**: System volume control and live volume/mute observation
+- **Carbon**: Media key event generation and virtual key codes
+- **AppKit / ApplicationServices**: Accessibility trust checks, haptics, AppleScript
+- **CGEvent**: Keyboard, modifier, and scroll simulation
+- **XCTest**: Unit tests for the pure logic
 
 ## Gesture Recognition
 
-The touch surface uses a sophisticated gesture recognition system:
+Classification is a pure function, `GestureRecognizer.classify(translation:duration:configuration:)`, evaluated when the drag ends:
 
-### Thresholds (customizable in `GestureConfiguration`)
-- **Swipe Threshold**: 50 points minimum distance
-- **Long Press Duration**: 0.5 seconds
-- **Tap Max Movement**: 10 points
-- **Swipe Velocity Threshold**: 300 points/second
-- **Scroll Sensitivity**: 1.0x (adjustable)
+1. **Long press**: movement under *Tap tolerance* and duration over *Long press duration*
+2. **Tap**: movement under *Tap tolerance*, released sooner
+3. **Swipe**: average speed over *Swipe speed* **and** distance at least *Swipe distance*; the dominant axis and its sign pick the direction
+4. **Scroll**: anything else, carrying the drag's translation as scroll deltas
 
-### Recognition Logic
-1. **Tap**: Short press with minimal movement
-2. **Long Press**: Extended press with minimal movement
-3. **Swipe**: High velocity movement in one direction
-4. **Scroll**: Low velocity continuous movement
+Because it depends only on its arguments, it is covered by unit tests and its thresholds can be edited live in Settings.
 
 ## Customization
 
-### Gesture Sensitivity
-Edit `GestureConfiguration` in `GestureType.swift`:
-
-```swift
-var config = GestureConfiguration()
-config.swipeThreshold = 75.0        // Require longer swipes
-config.scrollSensitivity = 2.0      // Make scrolling more sensitive
-config.longPressDuration = 0.7      // Require longer press
-```
-
-### Gesture Mappings
-Modify gesture-to-command mappings in `TouchSurfaceView.swift` -> `executeGesture()`:
+Change thresholds in **Settings → Gestures**. To change what a gesture *does*, edit `GestureRecognizer.command(for:)`:
 
 ```swift
 case .tap:
-    // Change from play/pause to something else
-    await mediaService.execute(.media(.next))
+    return .media(.next)   // was .media(.playPause)
 ```
 
 ## Known Limitations
 
-1. **Accessibility Required**: App needs accessibility permissions to control system functions
-2. **Media App Support**: Media controls work best with Apple Music, Spotify, and other media apps that support system media keys
-3. **Volume Control**: Uses system-wide volume (not app-specific)
-4. **Brightness Control**: May not work on external displays
+1. **Accessibility required**: without it, macOS drops every synthesized event. The app tells you when this is the case.
+2. **Media app support**: media keys work with apps that honour system media keys (Music, Spotify, browsers, …).
+3. **Volume control**: system-wide output volume, not per-app. Some devices expose neither a master nor per-channel volume control; the app reports this rather than pretending.
+4. **Brightness**: may not affect external displays.
+5. **Sleep needs Automation access**: it is the one command that goes through AppleScript.
+6. **Sandboxed**: the app runs in the App Sandbox with an Apple-events exception for System Events. If you distribute outside the Mac App Store you will also need to sign and notarize it; the hardened runtime is already enabled.
 
 ## Troubleshooting
 
-### Media controls not working
-- Ensure accessibility permissions are granted
-- Check that a media app (Music, Spotify, etc.) is running
-- Try playing media first, then use controls
+### Nothing happens when I press a button
+- Look at the status line: a red dot means the command failed and the text says why.
+- Most often Accessibility access is missing — use the banner's **Open System Settings** button.
 
-### Volume slider out of sync
-- The slider sets the system volume directly and re-reads it on launch and after each in-app command
-- It does **not** live-track volume changes made outside the app (hardware keys, other apps), so it can lag until the next in-app command
-- Use the app's volume up/down (or the ⌘↑ / ⌘↓ shortcuts) to resync
+### Media controls not working
+- Check that a media app is running and has played something at least once.
+
+### Volume slider doesn't move when I use the keyboard keys
+- The slider listens for CoreAudio changes; if it stays still, the output device may not publish volume properties (some HDMI/USB devices). Try switching output devices.
 
 ### Gestures not recognized
-- Try adjusting gesture thresholds in `GestureConfiguration`
-- Make sure gestures are deliberate (not too slow, not too fast)
-- Check the visual feedback on the touch surface
+- Open Settings (⌘,) and loosen the thresholds, or **Reset to Defaults**.
+- Watch the label on the surface: it shows what was recognized.
 
-## Next Steps
+### Sleep does nothing
+- Allow the Automation prompt, or enable Mac Remote → System Events under Privacy & Security → Automation.
 
-This is a proof of concept. Future enhancements could include:
+## Roadmap
 
-- [ ] Real-time volume level monitoring
-- [ ] Customizable gesture mappings UI
-- [ ] Multi-device support (control other Macs on network)
-- [ ] Gesture recording and playback
-- [ ] Menu bar mode with minimal UI
-- [ ] Keyboard shortcuts
-- [ ] Touch Bar support
+- [x] Real-time volume level monitoring
+- [x] Customizable gesture thresholds UI
+- [x] Menu bar mode
+- [x] Keyboard shortcuts
+- [x] Unit tests and CI
+- [ ] Customizable gesture → command mappings UI
+- [ ] Launch at login
+- [ ] Multi-device support (control other Macs on the network)
 
 ## License
 
-This is a proof of concept project. See parent repository for license information.
+MIT — see the parent repository's LICENSE.

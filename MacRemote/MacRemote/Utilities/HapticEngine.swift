@@ -8,57 +8,48 @@
 import Foundation
 import AppKit
 
-/// Manages haptic feedback for user interactions
-class HapticEngine {
+/// Manages haptic feedback for user interactions.
+///
+/// All feedback is routed through `perform(_:)`, which honours the user's
+/// "Haptic feedback" preference so a single switch silences every call site.
+@MainActor
+final class HapticEngine {
     static let shared = HapticEngine()
 
     private init() {}
 
     /// Trigger light haptic feedback
     func light() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .alignment,
-            performanceTime: .default
-        )
+        perform(.alignment)
     }
 
     /// Trigger medium haptic feedback
     func medium() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .levelChange,
-            performanceTime: .default
-        )
+        perform(.levelChange)
     }
 
     /// Trigger heavy haptic feedback
     func heavy() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .generic,
-            performanceTime: .default
-        )
+        perform(.generic)
     }
 
     /// Trigger selection haptic feedback
     func selection() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .alignment,
-            performanceTime: .default
-        )
+        perform(.alignment)
     }
 
     /// Trigger success haptic feedback
     func success() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .levelChange,
-            performanceTime: .default
-        )
+        perform(.levelChange)
     }
 
     /// Trigger error haptic feedback
     func error() {
-        NSHapticFeedbackManager.defaultPerformer.perform(
-            .generic,
-            performanceTime: .default
-        )
+        perform(.generic)
+    }
+
+    private func perform(_ pattern: NSHapticFeedbackManager.FeedbackPattern) {
+        guard AppSettings.shared.hapticsEnabled else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .default)
     }
 }

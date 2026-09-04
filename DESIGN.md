@@ -2,9 +2,9 @@
 
 ## Overview
 
-MacRemote is a native **macOS** SwiftUI application that turns the Mac it runs on into a gesture-driven media and system remote. Instead of talking to a separate device over the network, it **synthesizes macOS system events** — media keys, volume changes, arrow keys, scroll wheel, and AppleScript actions — so a large touch surface and a handful of buttons drive playback, volume, brightness, navigation, and screen lock on the local machine.
+MacRemote is a native **macOS** SwiftUI application that turns the Mac it runs on into a gesture-driven media and system remote. Instead of talking to a separate device over the network, it **synthesizes macOS system events** — media keys, volume changes, arrow keys, scroll wheel, modifier shortcuts, and one AppleScript action — so a large touch surface, a set of buttons, a menu bar extra, and keyboard shortcuts drive playback, volume, brightness, navigation, sleep, and screen lock on the local machine.
 
-This document describes what is actually built. It is a proof of concept: a single, self-contained app with no networking, no device discovery, and no external dependencies.
+This document describes what is actually built: a single, self-contained app with no networking, no device discovery, and no external dependencies, plus a unit-test target and a CI workflow that builds and tests it on every push.
 
 > **Scope note.** An earlier draft of this document described a much larger "Universal Remote" that would control Apple TV, HomeKit/Matter accessories, and Bluetooth peripherals over Wi-Fi. That vision is **not implemented** and is not described here. What follows matches the code in `MacRemote/`. The networked, multi-protocol product remains a possible future direction, summarized briefly at the end.
 
@@ -12,25 +12,24 @@ This document describes what is actually built. It is a proof of concept: a sing
 
 ## Mental model
 
-The app is a thin, one-directional pipeline from user input to a synthesized OS event:
+The app is a thin, one-directional pipeline from user input to a synthesized OS event, with two small side-channels feeding state back to the UI:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  UI layer (SwiftUI)                                            │
-│   TouchSurfaceView   ──gesture──┐      RemoteControlView       │
-│   (gesture surface)             │      (buttons, slider)       │
-│                                 │              │               │
-│                                 ▼              ▼               │
-│                        UniversalCommand (enum, protocol-free)  │
-├──────────────────────────────────────────────────────────────┤
-│  Service layer                                                 │
-│   MediaControlService.shared.execute(_:)   @MainActor          │
-│         dispatches by command category                         │
-├──────────────────────────────────────────────────────────────┤
-│  macOS system APIs                                             │
-│   NSEvent (systemDefined)  ·  CoreAudio  ·  CGEvent            │
-│   NSAppleScript  ·  NSHapticFeedbackManager                    │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  UI layer (SwiftUI)                                                    │
+│   TouchSurfaceView ─drag─▶ GestureRecognizer (pure) ─▶ UniversalCommand│
+│   RemoteControlView / MenuBarView / Controls menu ──▶ UniversalCommand │
+│   SettingsView ◀──▶ AppSettings (persisted thresholds & toggles)       │
+├──────────────────────────────────────────────────────────────────────┤
+│  Service layer (@MainActor singletons)                                 │
+│   MediaControlService.execute(_:)  ── dispatch by command category     │
+│       publishes lastCommand · currentVolume · isMuted · lastError      │
+│   AccessibilityPermission ── publishes isTrusted (polls until granted) │
+├──────────────────────────────────────────────────────────────────────┤
+│  macOS system APIs                                                     │
+│   NSEvent (systemDefined) · CGEvent · CoreAudio (+ listeners)          │
+│   AXIsProcessTrusted · NSAppleScript · NSHapticFeedbackManager         │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 The UI never touches system APIs directly. It only builds a `UniversalCommand` and hands it to the service. This keeps gesture/button code declarative and puts every privileged operation in one file.
@@ -50,16 +49,14 @@ enum UniversalCommand: Equatable {
 }
 ```
 
-The action enums:
-
 | Enum | Cases | Notes |
 |------|-------|-------|
 | `MediaAction` | `playPause`, `next`, `previous`, `fastForward`, `rewind` | `String`-backed, `CaseIterable`; each has a `systemImageName` (SF Symbol) |
-| `VolumeAction` | `up`, `down`, `mute`, `setLevel(Float)` | Plain `Equatable` enum (not `String`-backed, because `setLevel` carries an absolute 0.0–1.0 level); exposes `displayName` + `systemImageName` |
+| `VolumeAction` | `up`, `down`, `mute`, `setLevel(Float)` | Plain `Equatable` enum (carries an absolute 0.0–1.0 level); exposes `displayName` + `systemImageName` |
 | `NavigationAction` | `up`, `down`, `left`, `right`, `select`, `back`, `scroll(dx:dy:)` | `Equatable` (carries scroll deltas); has a `description` string |
 | `SystemAction` | `brightnessUp`, `brightnessDown`, `sleep`, `lock` | `String`-backed, `CaseIterable`, `systemImageName` |
 
-**Design intent:** to add a new controllable action you add a case here, handle it in `MediaControlService`, and optionally surface it in the UI. The `rawValue` display string + `systemImageName` convention lets buttons render uniformly and lets the status line show a human-readable label for free.
+**Design intent:** to add a new controllable action you add a case here, handle it in `MediaControlService`, and surface it in the UI and the Controls menu. `CommandTests` asserts every case has a display string and symbol.
 
 ---
 
@@ -71,127 +68,124 @@ The action enums:
 @Published var lastCommand: String = "Ready"
 @Published var currentVolume: Float = 0.5
 @Published var isMuted: Bool = false
+@Published var lastError: String?
 ```
 
-Everything enters through one `async` method that dispatches by category:
-
-```swift
-func execute(_ command: UniversalCommand) async {
-    switch command {
-    case .media(let a):      await executeMediaAction(a)
-    case .volume(let a):     await executeVolumeAction(a)
-    case .navigation(let a): await executeNavigationAction(a)
-    case .system(let a):     await executeSystemAction(a)
-    }
-}
-```
+Everything enters through one `async` method that clears `lastError` and dispatches by category. Handlers set `lastCommand` to the display string and, on any failure they can detect, call `report(_:)`, which logs through `os.Logger` and sets `lastError` so the status line can show it.
 
 ### How each category reaches the OS
 
-- **Media keys** (`play/pause`, `next`, `previous`, `fast-forward`, `rewind`) and **brightness** are sent as low-level HID media-key events. The service builds an `NSEvent.otherEvent(with: .systemDefined, …)` pair (key-down then key-up) using the private `NX_KEYTYPE_*` constants from Carbon, packs the key code into `data1`, sets the `0xa00`/`0xb00` modifier masks and subtype `8`, and posts each via `event.cgEvent?.post(tap: .cghidEventTap)`.
+- **Media keys** (`play/pause`, `next`, `previous`, `fast-forward`, `rewind`) and **brightness** share `sendSystemDefinedKey(_:)`. It builds an `NSEvent.otherEvent(with: .systemDefined, …)` pair (key-down then key-up) using the private `NX_KEYTYPE_*` constants from Carbon, packs the key code into `data1`, sets the `0xa00`/`0xb00` modifier masks and subtype `8`, and posts each via `cgEvent.post(tap: .cghidEventTap)`.
 
-- **Volume and mute** go through **CoreAudio**, via small helpers (`defaultOutputDevice()`, `readVolume()`, `readMute()`, `setVolume(to:)`, `setMute(_:)`) that resolve the default output device (`kAudioHardwarePropertyDefaultOutputDevice`) and read/write `kAudioDevicePropertyVolumeScalar` / `kAudioDevicePropertyMute`. `up`/`down` adjust by ±0.05, `setLevel(Float)` writes an absolute level (both clamped to 0.0–1.0), and setting a positive level while muted also unmutes. After any volume command — and on launch — the service refreshes `currentVolume` and `isMuted` from the system so published state stays truthful.
+- **Volume and mute** go through **CoreAudio**. `controlElements(for:on:)` asks whether the default output device exposes the property on the main (master) element and, if not, falls back to the individual stereo channels — many USB/HDMI outputs only publish per-channel controls. `up`/`down` adjust by ±0.05, `setLevel(Float)` writes an absolute level (both clamped to 0.0–1.0), and setting a positive level while muted also unmutes. If a device offers neither element, the service reports "does not allow volume control" instead of silently doing nothing.
 
-- **Navigation** maps arrows/select/back to virtual key codes (up 126, down 125, left 123, right 124, return 36, delete 51) synthesized with `CGEvent(keyboardEventSource:virtualKey:keyDown:)`. `scroll(dx:dy:)` posts a pixel-unit `CGEvent(scrollWheelEvent2Source:…)`.
+  **Live tracking.** On init the service registers `AudioObjectAddPropertyListenerBlock` listeners for the default-device property on the system object and for volume/mute on the current device. External changes (hardware keys, other apps, plugging in headphones) therefore update `currentVolume`/`isMuted` immediately, and listeners are re-attached when the default device changes.
 
-- **System** actions split: brightness reuses the media-key path; `sleep` and `lock` run **AppleScript** via `NSAppleScript` (`tell application "System Events" to sleep`, and a `⌃⌘Q` keystroke to lock).
+- **Navigation** maps arrows/select/back to Carbon `kVK_*` virtual key codes synthesized with `CGEvent(keyboardEventSource:virtualKey:keyDown:)` from a `.hidSystemState` source. `scroll(dx:dy:)` posts a pixel-unit `CGEvent(scrollWheelEvent2Source:…)`.
 
-Every handler sets `lastCommand` to a display string so the UI status line reflects the most recent action.
+- **System** actions split: brightness reuses the media-key path; **lock** posts the system-wide ⌃⌘Q shortcut as a `CGEvent` with `.maskCommand | .maskControl` (so it needs only Accessibility, not Automation); **sleep** runs `tell application "System Events" to sleep` via `NSAppleScript`, the one remaining Apple-events dependency. AppleScript errors are decoded — `-1743` becomes an "Automation access is required" message.
+
+### Accessibility gate
+
+Every HID-posting path first calls `requireAccessibility()`, which checks `AXIsProcessTrusted()` and reports a precise, actionable message when the app is not trusted. Without this, macOS drops synthesized events with no error at all.
 
 ---
 
 ## Layer 3: Gesture recognition
 
-`Views/TouchSurfaceView.swift` turns raw drag data into a discrete gesture, then into a command. It uses a single `DragGesture(minimumDistance: 0)` and tracks progress in a `GestureState`.
+Recognition is split into a stateful collector and a pure classifier.
 
 ### Supporting types (`Models/GestureType.swift`)
 
 - **`GestureType`** — the recognized gesture: `tap`, `longPress`, `swipeUp/Down/Left/Right`, `scroll(dx:dy:)`, `none`. Carries a `description` for display.
-- **`GestureConfiguration`** — tunable thresholds:
+- **`GestureConfiguration`** — a value type of tunable thresholds with a `static default`, a `Limits` namespace giving the legal range of each field, and `clamped()`:
 
   | Field | Default | Meaning |
   |-------|---------|---------|
-  | `swipeThreshold` | 50.0 pt | minimum distance to count as a swipe |
+  | `tapMaxMovement` | 10 pt | max drift still counted as a tap / long press |
   | `longPressDuration` | 0.5 s | hold time for a long press |
-  | `tapMaxMovement` | 10.0 pt | max drift still counted as a tap |
-  | `swipeVelocityThreshold` | 300.0 pt/s | swipe-vs-scroll velocity cutoff |
-  | `scrollSensitivity` | 1.0 | scroll delta multiplier |
+  | `swipeThreshold` | 50 pt | minimum distance for a swipe |
+  | `swipeVelocityThreshold` | 300 pt/s | swipe-vs-scroll speed cutoff |
+  | `scrollSensitivity` | 1.0× | multiplier on drag translation |
 
 - **`GestureState`** — mutable per-drag record (`startLocation`, `currentLocation`, `startTime`, `isActive`) with computed `translation`, `distance`, `duration`, and `velocity`, plus `reset()`.
 
-### Classification (`recognizeGesture`)
+### Classification (`Models/GestureRecognizer.swift`)
 
-On gesture end, the surface classifies in priority order:
+`GestureRecognizer.classify(translation:duration:configuration:)` is a **pure function** — same inputs, same output, no hidden state — which is what makes it unit-testable. Priority order:
 
 1. **Long press** — `distance < tapMaxMovement` **and** `duration > longPressDuration`
-2. **Tap** — `distance < tapMaxMovement` (short)
-3. **Swipe** — total velocity `> swipeVelocityThreshold`; dominant axis and sign choose the direction
-4. **Scroll** — anything else (low-velocity drag), carrying the raw translation as deltas
+2. **Tap** — `distance < tapMaxMovement`
+3. **Swipe** — average speed `> swipeVelocityThreshold` **and** `distance >= swipeThreshold`; dominant axis and sign choose the direction
+4. **Scroll** — anything else, carrying the translation as deltas
 
-### Gesture → command mapping (`executeGesture`)
+`GestureRecognizer.command(for:)` maps a gesture to its `UniversalCommand` (scroll deltas are halved). `GestureRecognizerTests` covers every branch, the boundary conditions, a zero-duration input, and the mapping table.
 
-| Gesture | Command |
-|---------|---------|
-| Tap | `.media(.playPause)` |
-| Long press | `.navigation(.back)` |
-| Swipe up | `.volume(.up)` |
-| Swipe down | `.volume(.down)` |
-| Swipe left | `.media(.previous)` |
-| Swipe right | `.media(.next)` |
-| Scroll | `.navigation(.scroll(dx: dx*0.5, dy: dy*0.5))` |
+### The surface (`Views/TouchSurfaceView.swift`)
 
-The surface also gives live visual feedback (a press indicator, the gesture label, and Δx/Δy readouts) and fires `HapticEngine.shared.selection()` on release.
+A single `DragGesture(minimumDistance: 0)` fills a `GestureState`. On release the view scales the translation by `scrollSensitivity`, calls `classify`, shows the result, dispatches the mapped command, resets, and fires `HapticEngine.shared.selection()`. Thresholds come from `AppSettings.shared.configuration`, so changes in Settings apply immediately.
+
+### Persisted settings (`Models/AppSettings.swift`)
+
+`AppSettings` is a `@MainActor` `ObservableObject` singleton holding `configuration`, `showsMenuBarExtra`, and `hapticsEnabled`. Every write is mirrored to `UserDefaults` and clamped to `GestureConfiguration.Limits` on both load and store, so a corrupt preference file can never make the surface unresponsive. It takes a `UserDefaults` in its initializer so `AppSettingsTests` runs against an isolated suite.
 
 ---
 
 ## Layer 4: UI composition
 
-- **`App/MacRemoteApp.swift`** — `@main` SwiftUI `App`; a single titled `WindowGroup` ("Mac Remote") that is resizable down to its content's minimum size (`.windowResizability(.contentMinSize)`). It also declares a `Controls` menu (`CommandMenu`) mirroring every action with keyboard shortcuts (⌘↩ play/pause, ⌘←/⌘→ tracks, ⌘↑/⌘↓ volume, ⇧⌘M mute, ⌘L lock), so the app is fully keyboard- and menu-navigable.
-- **`Views/ContentView.swift`** — root view; wraps `RemoteControlView` and sets a minimum/ideal size (min ≈360 × 600, ideal ≈400 × 680). The touch surface expands to fill any extra height when the window grows.
-- **`Views/RemoteControlView.swift`** — the full remote, laid out with standard `GroupBox` sections (Volume / Media / System) on the system window background so it adapts to Light/Dark. The volume slider is bound to `currentVolume` and issues `.volume(.setLevel(_:))` as it moves; a `.button`-style `Toggle` reflects and flips mute. Media buttons (previous / play-pause / next) and system buttons (dim / bright / lock) use `.bordered`/`.borderedProminent` styles, carry `.help(_:)` tooltips and `.accessibilityLabel`s, and call the service inside `Task { await … }` with `HapticEngine.shared.light()` on press. A status line binds to `mediaService.lastCommand`.
-- **`Utilities/HapticEngine.swift`** — singleton over `NSHapticFeedbackManager.defaultPerformer` exposing `light/medium/heavy/selection/success/error` (trackpad haptics only).
+- **`App/MacRemoteApp.swift`** — `@main` SwiftUI `App` with three scenes: a titled `WindowGroup` (id `"main"`, resizable down to its content's minimum size); a `Settings` scene hosting `SettingsView`; and a `MenuBarExtra` whose insertion is bound to `AppSettings.showsMenuBarExtra`. A `Controls` `CommandMenu` mirrors every action with keyboard shortcuts (⌘↩ play/pause, ⌘←/⌘→ tracks, ⇧⌘←/⇧⌘→ rewind/fast-forward, ⌘↑/⌘↓ volume, ⇧⌘M mute, ⌥⌘↑/⌥⌘↓ brightness, ⌘L lock, Sleep).
+- **`Views/ContentView.swift`** — root view; wraps `RemoteControlView` and sets a minimum/ideal size.
+- **`Views/RemoteControlView.swift`** — the full remote: header, an **Accessibility banner** (shown while `AccessibilityPermission.isTrusted` is false, with "Open System Settings" and "Request Access" buttons), touch surface, `GroupBox` sections (Volume / Media / System), and a status line that shows `lastError` in red when present or `lastCommand` otherwise.
+- **`Views/SettingsView.swift`** — a grouped `Form`: one labelled slider per threshold (bounded by `GestureConfiguration.Limits`), Reset to Defaults, and the menu bar / haptics toggles.
+- **`Views/MenuBarView.swift`** — menu items for the most-used commands plus "Open Mac Remote" (via `openWindow`) and Quit.
+- **`Services/AccessibilityPermission.swift`** — `@MainActor` singleton publishing `isTrusted`. macOS provides no notification for changes to the Accessibility list, so it polls `AXIsProcessTrusted()` every two seconds *only while untrusted* and stops once access is granted.
+- **`Utilities/HapticEngine.swift`** — `@MainActor` singleton over `NSHapticFeedbackManager.defaultPerformer`; every pattern routes through one `perform` that honours `AppSettings.hapticsEnabled`.
 
 ### Interface conventions (macOS HIG)
 
-The UI follows Apple's macOS Human Interface Guidelines rather than a custom theme:
+- **Adaptive appearance** — semantic colors and materials (`.primary`/`.secondary`/`.tint`/`.quaternary`, `Color(nsColor:)`) instead of hardcoded RGB.
+- **Standard controls & structure** — `GroupBox` sections, `.bordered`/`.borderedProminent` buttons, native `Slider`, `Toggle`, `Form`, `LabeledContent`, semantic typography.
+- **Full keyboard access** — the `Controls` menu exposes every command with a shortcut; state-reflecting controls are two-way bound.
+- **Accessibility** — interactive views carry `.help(_:)` tooltips and `.accessibilityLabel`/`.accessibilityHint`/`.accessibilityValue`. The drag surface is a single labelled element that points VoiceOver users at the equivalent buttons.
 
-- **Adaptive appearance** — semantic colors and materials (`.primary`/`.secondary`/`.tint`/`.quaternary`, `Color(nsColor:)`) instead of hardcoded RGB, so the app tracks Light/Dark mode and the user's accent color. No fixed gradients or title-bar hiding.
-- **Standard controls & structure** — `GroupBox` sections, `.bordered`/`.borderedProminent` buttons, native `Slider` and `Toggle`, and semantic typography (`.title2`, `.subheadline`, `.footnote`).
-- **Full keyboard access** — the `Controls` menu bar item exposes every command with a shortcut; controls that reflect state (volume, mute) are two-way bound.
-- **Accessibility** — interactive views carry `.help(_:)` tooltips and `.accessibilityLabel`/`.accessibilityHint`. Because a drag surface can't be driven by VoiceOver, the touch surface is a single labeled element that points users at the equivalent buttons, which provide the accessible path.
+---
+
+## Testing and CI
+
+- **`MacRemoteTests`** (XCTest, app-hosted) covers the pure logic: gesture classification and mapping, settings persistence and clamping, and the command vocabulary. System-event synthesis is deliberately untested — it can only be verified on a real Mac with Accessibility granted.
+- **`.github/workflows/ci.yml`** runs `xcodebuild build` and `xcodebuild test` for the shared `MacRemote` scheme on a macOS runner for every push and pull request, with code signing disabled. Logs are uploaded as artifacts.
 
 ---
 
 ## Platform, build, and permissions
 
 - **Language / UI:** Swift 5.0, SwiftUI.
-- **Deployment target:** macOS 13.0 (`MACOSX_DEPLOYMENT_TARGET = 13.0`).
-- **Bundle identifier:** `com.example.MacRemote`. `Info.plist` is checked in (`GENERATE_INFOPLIST_FILE = NO`); category is Utilities.
-- **Frameworks:** AppKit, CoreAudio, Carbon, CoreGraphics (`CGEvent`) — no third-party dependencies, no package manager, no test target, no CI.
-- **Build:** open `MacRemote/MacRemote.xcodeproj` in Xcode and Run (⌘R), or `xcodebuild -project MacRemote/MacRemote.xcodeproj -scheme MacRemote build` on a Mac with Xcode.
+- **Deployment target:** macOS 13.0.
+- **Bundle identifier:** `com.example.MacRemote` (tests: `com.example.MacRemoteTests`) — change before distributing.
+- **Info.plist:** checked in (`GENERATE_INFOPLIST_FILE = NO`). Declares `NSAppleEventsUsageDescription` (required, or macOS refuses Apple events outright), display name, category, and disables automatic/sudden termination so listeners stay alive.
+- **Frameworks:** AppKit, ApplicationServices, CoreAudio, Carbon, CoreGraphics, os — no third-party dependencies, no package manager.
+- **Build:** shared scheme `MacRemote`; hardened runtime enabled on the app target for notarization.
 
 ### Runtime permissions
 
-- **Accessibility** (System Settings → Privacy & Security → Accessibility) — required for synthesized key/scroll HID events to be delivered.
-- **Automation / Apple Events** — required for `sleep` and `lock`, which drive System Events via AppleScript.
+- **Accessibility** — required for every synthesized HID event. Detected and explained in-app.
+- **Automation / Apple Events** — required only for `sleep`.
 
-### Sandbox tension (known)
+### Sandbox posture
 
-`MacRemote.entitlements` enables **App Sandbox** (`com.apple.security.app-sandbox`) along with `com.apple.security.automation.apple-events` and user-selected read-only file access. Synthesizing global HID events and driving System Events generally depends on Accessibility permission and can conflict with a strict sandbox. This tension is unresolved in the proof of concept; any change touching distribution, entitlements, or event delivery should treat it deliberately rather than flipping the sandbox flag silently, since it affects the app's security posture.
+`MacRemote.entitlements` keeps **App Sandbox** on and adds exactly what the app needs: `com.apple.security.automation.apple-events` (hardened-runtime permission to *ask* for Automation) and `com.apple.security.temporary-exception.apple-events` scoped to `com.apple.systemevents` (sandbox permission to actually deliver the event). The unused user-selected-file entitlement was removed. Synthesizing HID events from a sandboxed app works once Accessibility access is granted; distributing through the Mac App Store would still be at the reviewer's discretion because of that requirement.
 
 ---
 
 ## Known rough edges
 
-These are current limitations, not intentional design:
-
-- **Private media-key event synthesis is fragile.** The `NX_KEYTYPE_*` constants and the specific `NSEvent` subtype/modifier-mask packing are undocumented; behavior can change across macOS versions, so test on-device after edits.
-- **Volume state can drift from external changes.** `currentVolume`/`isMuted` are refreshed on launch and after the app's own volume commands, but nothing observes volume changes made outside the app (hardware keys, other apps), so the slider may lag the true system volume until the next in-app command.
-- **`setMute`/`setVolume` are best-effort.** They only update published state when the CoreAudio write returns `noErr`; on an output device that doesn't expose the volume or mute property, the control will appear to do nothing rather than fake success.
-- **macOS only.** Despite the parent repo's iPhone/iPad framing, this target is a Mac app controlling the Mac it runs on.
+- **Private media-key event synthesis is fragile.** The `NX_KEYTYPE_*` constants and the `NSEvent` subtype/modifier-mask packing are undocumented; behavior can change across macOS versions, so test on-device after edits.
+- **`⌃⌘Q` lock assumes the default shortcut.** If a user has rebound or disabled the system lock shortcut, the lock command does nothing.
+- **Scroll is delivered on release**, as one delta for the whole drag, rather than continuously while dragging.
+- **macOS only.** This target is a Mac app controlling the Mac it runs on.
 
 ---
 
 ## Possible future direction
 
-The original ambition — a *networked* universal remote that discovers and controls Apple TV (MediaRemote), HomeKit/Matter accessories, and Bluetooth LE devices over Wi-Fi — would reuse the one abstraction that already exists here: `UniversalCommand`. The natural extension is a **protocol-translator layer** behind the service, where each transport (HomeKit, MediaRemote, BLE) implements a translator from `UniversalCommand` to its wire format, and the current local-event path becomes just one translator among several. None of that is built today; MacRemote deliberately stays a single-file-per-concern, local-only proof of concept.
+The original ambition — a *networked* universal remote that discovers and controls Apple TV (MediaRemote), HomeKit/Matter accessories, and Bluetooth LE devices over Wi-Fi — would reuse the one abstraction that already exists here: `UniversalCommand`. The natural extension is a **protocol-translator layer** behind the service, where each transport implements a translator from `UniversalCommand` to its wire format, and the current local-event path becomes just one translator among several. None of that is built today.
