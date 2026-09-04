@@ -6,7 +6,6 @@
 //
 
 import XCTest
-@testable import MacRemote
 
 final class GestureRecognizerTests: XCTestCase {
     private let config = GestureConfiguration.default

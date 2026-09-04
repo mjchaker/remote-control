@@ -53,7 +53,7 @@ remote-control/
 - **Language**: Swift 5.0 (`SWIFT_VERSION = 5.0`), SwiftUI, `async/await`, `@MainActor` singletons.
 - **Deployment target**: macOS 13.0. Bundle ID `com.example.MacRemote` (placeholder — change before distribution).
 - **Frameworks**: AppKit, ApplicationServices (`AXIsProcessTrusted`), CoreAudio (volume + property listeners), Carbon (`NX_KEYTYPE_*`, `kVK_*`), CoreGraphics (`CGEvent`), os (`Logger`), XCTest.
-- **Build settings of note**: `GENERATE_INFOPLIST_FILE = NO` (app), `ENABLE_HARDENED_RUNTIME = YES`, App Sandbox on. The test target is app-hosted (`TEST_HOST`/`BUNDLE_LOADER`) and uses `@testable import MacRemote`.
+- **Build settings of note**: `GENERATE_INFOPLIST_FILE = NO` (app), `ENABLE_HARDENED_RUNTIME = YES`, App Sandbox on. The test target is a plain logic bundle (no `TEST_HOST`): it compiles the pure model sources (`Command.swift`, `GestureType.swift`, `GestureRecognizer.swift`, `AppSettings.swift`) directly, so tests never need the GUI app to launch. Keep those files free of AppKit.
 - No package manager, no third-party dependencies, no linter config.
 
 ## Architecture
@@ -99,7 +99,7 @@ xcodebuild -project MacRemote/MacRemote.xcodeproj -scheme MacRemote -destination
 xcodebuild -project MacRemote/MacRemote.xcodeproj -scheme MacRemote -destination 'platform=macOS' test
 ```
 
-`.github/workflows/ci.yml` runs both on a macOS runner (`CODE_SIGNING_ALLOWED=NO`) for every push and PR. **If you are working from a non-macOS environment you cannot compile here — push and read the CI result, then fix.** Do not claim a build passes without CI or Xcode evidence.
+`.github/workflows/ci.yml` runs both on a macOS runner (`CODE_SIGNING_ALLOWED=NO`) for every push and PR, then launches the built app for ten seconds as a crash-at-launch smoke test. **If you are working from a non-macOS environment you cannot compile here — push and read the CI result, then fix.** Do not claim a build passes without CI or Xcode evidence.
 
 Unit tests cover only the pure logic (classifier, settings, command vocabulary). Anything that posts events must be exercised by hand on a Mac with Accessibility granted.
 
@@ -120,7 +120,7 @@ App Sandbox stays **on** with exactly the Apple-events entitlements the sleep co
 - **Errors are UI state, not console noise.** Use `report(_:)` (logs via `os.Logger` and sets `lastError`), never bare `print`.
 - **Observed singletons** are referenced with `@ObservedObject` (not `@StateObject`) since the view doesn't own them.
 - **Style**: SwiftUI throughout; file header comment blocks in the existing `//  Name.swift` style; SF Symbols; each view file ends with a `#Preview`; semantic colors/fonts; `.help(_:)` + accessibility modifiers on interactive views; `HapticEngine.shared.light()` on button press, `.selection()` on gesture end.
-- **Project file**: `project.pbxproj` uses short IDs (`A1xxxx` build files, `A2xxxx` file refs, `A5xxxx` groups, `A6xxxx` targets, `A8xxxx` phases, `ABxxxx` configs). When adding a Swift file, add a `PBXFileReference`, a `PBXBuildFile`, the group entry, and the Sources-phase entry — for the right target.
+- **Project file**: `project.pbxproj` uses short IDs (`A1xxxx` build files, `A2xxxx` file refs, `A5xxxx` groups, `A6xxxx` targets, `A8xxxx` phases, `ABxxxx` configs). When adding a Swift file, add a `PBXFileReference`, a `PBXBuildFile`, the group entry, and the Sources-phase entry — for the right target. A pure model file that tests need must get a second `PBXBuildFile` in the `MacRemoteTests` Sources phase.
 
 ### Known rough edges (don't treat as intentional)
 

@@ -6,7 +6,6 @@
 //
 
 import XCTest
-@testable import MacRemote
 
 final class AppSettingsTests: XCTestCase {
     private var suiteName: String!

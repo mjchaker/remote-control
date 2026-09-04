@@ -16,6 +16,7 @@ jobs:
     env:
       PROJECT: MacRemote/MacRemote.xcodeproj
       SCHEME: MacRemote
+      DERIVED_DATA: build/DerivedData
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -30,22 +31,42 @@ jobs:
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             | tee build.log | grep -E 'error:|warning:|BUILD ' || true
           grep -q 'BUILD SUCCEEDED' build.log
 
-      - name: Test
+      - name: Unit tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
-            | tee test.log | grep -E 'error:|Test Case|Executed|TEST ' || true
+            | tee test.log | grep -E 'error:|failed|Test Suite|Executed|TEST ' || true
           grep -q 'TEST SUCCEEDED' test.log
+
+      - name: Launch smoke test
+        # Start the built app and make sure it is still running ten seconds
+        # later. Catches crashes at launch that unit tests cannot see.
+        run: |
+          APP="$DERIVED_DATA/Build/Products/Debug/MacRemote.app"
+          test -x "$APP/Contents/MacOS/MacRemote"
+          "$APP/Contents/MacOS/MacRemote" > smoke.log 2>&1 &
+          PID=$!
+          sleep 10
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "App is still running after 10s — OK"
+            kill "$PID"
+          else
+            echo "::error::App exited within 10s of launch"
+            cat smoke.log
+            exit 1
+          fi
 
       - name: Upload logs
         if: always()
@@ -55,4 +76,5 @@ jobs:
           path: |
             build.log
             test.log
+            smoke.log
           if-no-files-found: ignore

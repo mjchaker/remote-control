@@ -152,8 +152,8 @@ A single `DragGesture(minimumDistance: 0)` fills a `GestureState`. On release th
 
 ## Testing and CI
 
-- **`MacRemoteTests`** (XCTest, app-hosted) covers the pure logic: gesture classification and mapping, settings persistence and clamping, and the command vocabulary. System-event synthesis is deliberately untested — it can only be verified on a real Mac with Accessibility granted.
-- **`.github/workflows/ci.yml`** runs `xcodebuild build` and `xcodebuild test` for the shared `MacRemote` scheme on a macOS runner for every push and pull request, with code signing disabled. Logs are uploaded as artifacts.
+- **`MacRemoteTests`** (XCTest) is a logic bundle that compiles the pure model sources (`Command`, `GestureType`, `GestureRecognizer`, `AppSettings`) directly rather than injecting into the running app, so it needs no GUI session or code signature. It covers gesture classification and mapping, settings persistence and clamping, and the command vocabulary. System-event synthesis is deliberately untested — it can only be verified on a real Mac with Accessibility granted.
+- **`.github/workflows/ci.yml`** runs `xcodebuild build` and `xcodebuild test` for the shared `MacRemote` scheme on a macOS runner for every push and pull request, with code signing disabled, then launches the built app for ten seconds to catch crashes at launch. Logs are uploaded as artifacts.
 
 ---
 

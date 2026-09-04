@@ -6,7 +6,6 @@
 //
 
 import XCTest
-@testable import MacRemote
 
 final class CommandTests: XCTestCase {
     func testEveryMediaActionHasDisplayNameAndSymbol() {

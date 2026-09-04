@@ -24,6 +24,10 @@
 		A10020 /* GestureRecognizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20020 /* GestureRecognizerTests.swift */; };
 		A10021 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20021 /* AppSettingsTests.swift */; };
 		A10022 /* CommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20022 /* CommandTests.swift */; };
+		A10023 /* Command.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20005 /* Command.swift */; };
+		A10024 /* GestureType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006 /* GestureType.swift */; };
+		A10025 /* GestureRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20012 /* GestureRecognizer.swift */; };
+		A10026 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20013 /* AppSettings.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -222,7 +226,6 @@
 					};
 					A60002 = {
 						CreatedOnToolsVersion = 15.0;
-						TestTargetID = A60001;
 					};
 				};
 			};
@@ -291,6 +294,10 @@
 				A10020 /* GestureRecognizerTests.swift in Sources */,
 				A10021 /* AppSettingsTests.swift in Sources */,
 				A10022 /* CommandTests.swift in Sources */,
+				A10023 /* Command.swift in Sources */,
+				A10024 /* GestureType.swift in Sources */,
+				A10025 /* GestureRecognizer.swift in Sources */,
+				A10026 /* AppSettings.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -482,7 +489,6 @@
 		AB0005 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -492,14 +498,12 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MacRemote";
 			};
 			name = Debug;
 		};
 		AB0006 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -509,7 +513,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MacRemote";
 			};
 			name = Release;
 		};
