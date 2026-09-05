@@ -33,8 +33,12 @@ enum GestureType: Equatable {
     }
 }
 
-/// Configuration for gesture recognition thresholds
-struct GestureConfiguration {
+/// Configuration for gesture recognition thresholds.
+///
+/// This is a plain value type: `GestureRecognizer.classify` is a pure function
+/// of a gesture's translation, its duration, and one of these configurations.
+/// Persisted, user-editable values live in `AppSettings`.
+struct GestureConfiguration: Equatable {
     /// Minimum distance (in points) to recognize a swipe
     var swipeThreshold: CGFloat = 50.0
 
@@ -49,6 +53,37 @@ struct GestureConfiguration {
 
     /// Velocity threshold to distinguish swipe from scroll
     var swipeVelocityThreshold: CGFloat = 300.0
+
+    /// The factory defaults.
+    static let `default` = GestureConfiguration()
+
+    /// Allowed ranges for each tunable, used by the Settings UI and by
+    /// `clamped()` so a corrupt or hand-edited preference can't disable input.
+    enum Limits {
+        static let swipeThreshold: ClosedRange<Double> = 10...200
+        static let longPressDuration: ClosedRange<Double> = 0.2...2.0
+        static let tapMaxMovement: ClosedRange<Double> = 2...40
+        static let scrollSensitivity: ClosedRange<Double> = 0.1...5.0
+        static let swipeVelocityThreshold: ClosedRange<Double> = 50...2000
+    }
+
+    /// Returns a copy with every field forced into its allowed range.
+    func clamped() -> GestureConfiguration {
+        var copy = self
+        copy.swipeThreshold = CGFloat(Double(swipeThreshold).clamped(to: Limits.swipeThreshold))
+        copy.longPressDuration = longPressDuration.clamped(to: Limits.longPressDuration)
+        copy.tapMaxMovement = CGFloat(Double(tapMaxMovement).clamped(to: Limits.tapMaxMovement))
+        copy.scrollSensitivity = CGFloat(Double(scrollSensitivity).clamped(to: Limits.scrollSensitivity))
+        copy.swipeVelocityThreshold = CGFloat(Double(swipeVelocityThreshold).clamped(to: Limits.swipeVelocityThreshold))
+        return copy
+    }
+}
+
+extension Double {
+    /// Clamp a value into a closed range.
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }
 
 /// Gesture state tracking

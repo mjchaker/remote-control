@@ -9,11 +9,16 @@ import SwiftUI
 
 /// Main remote control interface
 struct RemoteControlView: View {
-    @StateObject private var mediaService = MediaControlService.shared
+    @ObservedObject private var mediaService = MediaControlService.shared
+    @ObservedObject private var permission = AccessibilityPermission.shared
 
     var body: some View {
         VStack(spacing: 16) {
             headerSection
+
+            if !permission.isTrusted {
+                permissionBanner
+            }
 
             TouchSurfaceView()
                 .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
@@ -45,6 +50,40 @@ struct RemoteControlView: View {
         .accessibilityElement(children: .combine)
     }
 
+    // MARK: - Permission banner
+
+    /// Shown until macOS grants Accessibility access; without it every
+    /// synthesized event is silently dropped, so this is the first thing a
+    /// new user needs to see.
+    private var permissionBanner: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Accessibility access required", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+
+                Text("Mac Remote sends keyboard, media, and scroll events to your Mac. Enable it under Privacy & Security → Accessibility, then come back here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Button("Open System Settings") {
+                        permission.openSystemSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Request Access") {
+                        permission.requestAccess()
+                    }
+
+                    Spacer()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
     // MARK: - Volume
 
     private var volumeSection: some View {
@@ -57,6 +96,7 @@ struct RemoteControlView: View {
 
                     Slider(value: volumeBinding, in: 0...1)
                         .accessibilityLabel("Volume")
+                        .accessibilityValue(volumePercentText)
 
                     Image(systemName: "speaker.wave.3.fill")
                         .foregroundStyle(.secondary)
@@ -125,7 +165,7 @@ struct RemoteControlView: View {
                 commandButton(
                     "Dim",
                     systemImage: "sun.min.fill",
-                    help: "Decrease display brightness"
+                    help: "Decrease display brightness (⌥⌘↓)"
                 ) {
                     await mediaService.execute(.system(.brightnessDown))
                 }
@@ -133,7 +173,7 @@ struct RemoteControlView: View {
                 commandButton(
                     "Brighten",
                     systemImage: "sun.max.fill",
-                    help: "Increase display brightness"
+                    help: "Increase display brightness (⌥⌘↑)"
                 ) {
                     await mediaService.execute(.system(.brightnessUp))
                 }
@@ -154,18 +194,22 @@ struct RemoteControlView: View {
     private var statusSection: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(.green)
+                .fill(mediaService.lastError == nil ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
 
-            Text(mediaService.lastCommand)
+            Text(mediaService.lastError ?? mediaService.lastCommand)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(mediaService.lastError == nil ? HierarchicalShapeStyle.secondary : HierarchicalShapeStyle.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Last command: \(mediaService.lastCommand)")
+        .accessibilityLabel(
+            mediaService.lastError.map { "Error: \($0)" } ?? "Last command: \(mediaService.lastCommand)"
+        )
     }
 
     // MARK: - Bindings

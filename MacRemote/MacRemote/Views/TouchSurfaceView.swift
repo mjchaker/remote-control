@@ -7,11 +7,15 @@
 
 import SwiftUI
 
-/// Interactive touch surface that recognizes gestures
+/// Interactive touch surface that recognizes gestures.
+///
+/// The view only collects raw drag data into a `GestureState`; classification
+/// is delegated to the pure `GestureRecognizer`, and thresholds come from the
+/// user's persisted `AppSettings`.
 struct TouchSurfaceView: View {
-    @StateObject private var mediaService = MediaControlService.shared
+    @ObservedObject private var mediaService = MediaControlService.shared
+    @ObservedObject private var settings = AppSettings.shared
     @State private var gestureState = GestureState()
-    @State private var config = GestureConfiguration()
     @State private var lastGesture: GestureType = .none
     @State private var isPressed = false
 
@@ -71,6 +75,8 @@ struct TouchSurfaceView: View {
 
     // MARK: - Gesture Handling
 
+    private var config: GestureConfiguration { settings.configuration }
+
     private func handleGestureChange(_ value: DragGesture.Value) {
         if !gestureState.isActive {
             gestureState.startLocation = value.location
@@ -81,12 +87,10 @@ struct TouchSurfaceView: View {
 
         gestureState.currentLocation = value.location
 
-        // Continuous scroll for small movements
+        // Live label while dragging; the final classification happens on release.
         if gestureState.distance > config.tapMaxMovement {
             let dx = value.translation.width * config.scrollSensitivity
             let dy = value.translation.height * config.scrollSensitivity
-
-            // Update visual feedback
             lastGesture = .scroll(dx: dx, dy: dy)
         }
     }
@@ -94,11 +98,22 @@ struct TouchSurfaceView: View {
     private func handleGestureEnd(_ value: DragGesture.Value) {
         gestureState.currentLocation = value.location
 
-        let recognizedGesture = recognizeGesture()
+        let translation = gestureState.translation
+        let duration = gestureState.duration
+        let recognizedGesture = GestureRecognizer.classify(
+            translation: CGSize(
+                width: translation.width * config.scrollSensitivity,
+                height: translation.height * config.scrollSensitivity
+            ),
+            duration: duration,
+            configuration: config
+        )
         lastGesture = recognizedGesture
 
         // Execute the appropriate command
-        executeGesture(recognizedGesture)
+        if let command = GestureRecognizer.command(for: recognizedGesture) {
+            Task { await mediaService.execute(command) }
+        }
 
         // Reset state
         gestureState.reset()
@@ -106,75 +121,6 @@ struct TouchSurfaceView: View {
 
         // Haptic feedback
         HapticEngine.shared.selection()
-    }
-
-    /// Recognize what type of gesture was performed
-    private func recognizeGesture() -> GestureType {
-        let distance = gestureState.distance
-        let duration = gestureState.duration
-        let translation = gestureState.translation
-        let velocity = gestureState.velocity
-        let totalVelocity = sqrt(velocity.width * velocity.width + velocity.height * velocity.height)
-
-        // Long press
-        if distance < config.tapMaxMovement && duration > config.longPressDuration {
-            return .longPress
-        }
-
-        // Tap
-        if distance < config.tapMaxMovement {
-            return .tap
-        }
-
-        // Swipe (high velocity movement)
-        if totalVelocity > config.swipeVelocityThreshold {
-            if abs(translation.width) > abs(translation.height) {
-                return translation.width > 0 ? .swipeRight : .swipeLeft
-            } else {
-                return translation.height > 0 ? .swipeDown : .swipeUp
-            }
-        }
-
-        // Scroll (low velocity movement)
-        return .scroll(dx: translation.width, dy: translation.height)
-    }
-
-    /// Execute the command based on the gesture
-    private func executeGesture(_ gesture: GestureType) {
-        Task {
-            switch gesture {
-            case .tap:
-                // Tap = Play/Pause
-                await mediaService.execute(.media(.playPause))
-
-            case .longPress:
-                // Long press = Context menu / back
-                await mediaService.execute(.navigation(.back))
-
-            case .swipeUp:
-                // Swipe up = Volume up
-                await mediaService.execute(.volume(.up))
-
-            case .swipeDown:
-                // Swipe down = Volume down
-                await mediaService.execute(.volume(.down))
-
-            case .swipeLeft:
-                // Swipe left = Previous track
-                await mediaService.execute(.media(.previous))
-
-            case .swipeRight:
-                // Swipe right = Next track
-                await mediaService.execute(.media(.next))
-
-            case .scroll(let dx, let dy):
-                // Scroll = Navigation
-                await mediaService.execute(.navigation(.scroll(dx: dx * 0.5, dy: dy * 0.5)))
-
-            case .none:
-                break
-            }
-        }
     }
 }
 
@@ -184,5 +130,4 @@ struct TouchSurfaceView: View {
     TouchSurfaceView()
         .frame(width: 400, height: 500)
         .padding()
-        .background(Color.black)
 }

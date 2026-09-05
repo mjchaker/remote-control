@@ -9,8 +9,12 @@ import SwiftUI
 
 @main
 struct MacRemoteApp: App {
+    static let mainWindowID = "main"
+
+    @ObservedObject private var settings = AppSettings.shared
+
     var body: some Scene {
-        WindowGroup("Mac Remote") {
+        WindowGroup("Mac Remote", id: Self.mainWindowID) {
             ContentView()
         }
         // Allow the window to be resized down to its content's minimum size,
@@ -26,6 +30,10 @@ struct MacRemoteApp: App {
                     .keyboardShortcut(.leftArrow, modifiers: .command)
                 Button("Next Track") { run(.media(.next)) }
                     .keyboardShortcut(.rightArrow, modifiers: .command)
+                Button("Rewind") { run(.media(.rewind)) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+                Button("Fast Forward") { run(.media(.fastForward)) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
 
                 Divider()
 
@@ -39,11 +47,30 @@ struct MacRemoteApp: App {
                 Divider()
 
                 Button("Brightness Up") { run(.system(.brightnessUp)) }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .option])
                 Button("Brightness Down") { run(.system(.brightnessDown)) }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+
+                Divider()
+
                 Button("Lock Screen") { run(.system(.lock)) }
                     .keyboardShortcut("l", modifiers: .command)
+                Button("Sleep") { run(.system(.sleep)) }
             }
         }
+
+        Settings {
+            SettingsView()
+        }
+
+        MenuBarExtra(
+            "Mac Remote",
+            systemImage: "playpause.circle",
+            isInserted: $settings.showsMenuBarExtra
+        ) {
+            MenuBarView()
+        }
+        .menuBarExtraStyle(.menu)
     }
 
     /// Dispatch a command to the shared control service from a menu action.
